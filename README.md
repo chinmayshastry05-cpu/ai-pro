@@ -2,7 +2,7 @@
 
 Box any area of your Android screen and act on it with on-device AI — an original, free app inspired by Samsung's AI Select, built for every Android phone (Android 11+).
 
-![AI Pro](docs/screenshots.png)
+<img src="docs/screenshot-1.jpg" width="32%"> <img src="docs/screenshot-2.jpg" width="32%"> <img src="docs/screenshot-3.jpg" width="32%">
 
 ## What it does
 
