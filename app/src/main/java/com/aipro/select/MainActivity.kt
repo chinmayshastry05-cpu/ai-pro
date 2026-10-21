@@ -38,19 +38,14 @@ class MainActivity : Activity() {
         if (uiShown && isServiceEnabled()) tryCapture()
     }
 
-    private var holdShown = false
-
     private fun tryCapture() {
         val svc = CaptureService.instance
         if (svc != null) {
-            // Draw a real first frame immediately so the system splash/starting window
-            // clears right away, then hold this branded screen over the ~1-2s capture
-            // wait. SelectActivity closes us the moment it is on screen, so the splash
-            // icon card can never linger on top of the selection overlay.
-            showHoldScreen()
-            Shared.closeMain = { finish() }
+            // No splash / hold screen: this activity is fully transparent
+            // (windowDisablePreview kills the system starting window too), so the
+            // user goes straight from their app to the capture overlay.
             svc.captureNow()
-            handler.postDelayed({ finish() }, 8000) // safety net if capture fails
+            finish()
         } else if (attempts++ < 12) {
             // service is enabled but the system is still binding it after a cold start
             handler.postDelayed({ tryCapture() }, 250)
@@ -58,23 +53,6 @@ class MainActivity : Activity() {
             showEnableUI()
             if (::status.isInitialized) status.text = "AI Pro is starting up. Tap once more."
         }
-    }
-
-    private fun showHoldScreen() {
-        if (holdShown || uiShown) return
-        holdShown = true
-        val root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.gravity = Gravity.CENTER
-        root.setBackgroundColor(Color.parseColor("#0B0B0E"))
-        val title = ShimmerTextView(this)
-        title.text = "AI PRO"
-        title.textSize = 26f
-        title.gravity = Gravity.CENTER
-        title.setTypeface(null, android.graphics.Typeface.BOLD)
-        title.letterSpacing = 0.25f
-        root.addView(title)
-        setContentView(root)
     }
 
     private fun showEnableUI() {

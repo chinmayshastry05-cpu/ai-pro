@@ -87,11 +87,6 @@ class SelectActivity : Activity() {
         buildMiniCard(); root.addView(miniCard)
         buildCloseChip(); root.addView(closeChip)
         setContentView(root)
-        // we are on screen now: close the MainActivity hold screen behind us
-        root.post {
-            Shared.closeMain?.invoke()
-            Shared.closeMain = null
-        }
         // let the entry animation settle before OCR competes for CPU
         root.postDelayed({ startTapDetectOcr(b) }, 800)
     }
@@ -229,7 +224,7 @@ class SelectActivity : Activity() {
                 var sum = 0L; var n = 0
                 var y = 1
                 while (y < h - 1) { var x = 1; while (x < w - 1) { sum += gx(x, y) + gy(x, y); n++; x += 3 }; y += 3 }
-                val minG = maxOf(20, (sum / maxOf(1, n)) * 3).toInt()
+                val minG = maxOf(20, (sum / maxOf(1, n)) * 2).toInt()
 
                 val tp = selView.viewToBmpPoint(viewX, viewY)
                 val tx = (tp.x * sc).toInt().coerceIn(2, w - 3)
@@ -256,6 +251,51 @@ class SelectActivity : Activity() {
                     return s2
                 }
 
+                fun emitBox(l: Int, t: Int, r: Int, b: Int) {
+                    val bw = (r - l).toFloat(); val bh = (b - t).toFloat()
+                    val padX = bw * 0.015f + 2f; val padY = bh * 0.015f + 2f
+                    val rect = RectF(
+                        ((l - padX) / sc).coerceIn(0f, full.width - 4f),
+                        ((t - padY) / sc).coerceIn(0f, full.height - 4f),
+                        ((r + padX) / sc).coerceIn(4f, full.width.toFloat()),
+                        ((b + padY) / sc).coerceIn(4f, full.height.toFloat()))
+                    runOnUiThread {
+                        if (!isFinishing) confirm(selView.bmpToView(rect), false)
+                    }
+                }
+
+                // --- Pass 1: enclosing block (thumbnails, cards, feed rows) ---
+                // Find the strong FULL-WIDTH horizontal lines above and below the tap:
+                // those are the boundaries of the content block, while inner detail
+                // (faces, text, phone screens) never spans the width. Vertical sides
+                // default to the screen edges (thumbnails bleed to the edge) unless a
+                // near-full-height vertical edge says the block has real side margins.
+                run {
+                    val x0w = (w * 0.06f).toInt(); val x1w = (w * 0.94f).toInt()
+                    val needRow = ((x1w - x0w) * 0.6f).toInt()
+                    var T = -1; var B = -1
+                    var y2 = ty - 3
+                    while (y2 > 2) { if (gy(tx, y2) >= minG && rowSupport(y2, x0w, x1w) >= needRow) { T = y2; break }; y2-- }
+                    y2 = ty + 3
+                    while (y2 < h - 3) { if (gy(tx, y2) >= minG && rowSupport(y2, x0w, x1w) >= needRow) { B = y2; break }; y2++ }
+                    if (T >= 0 && B > T && B - T >= 12) {
+                        var L = 2; var R = w - 3
+                        val needCol = ((B - T - 4) * 0.85f).toInt().coerceAtLeast(8)
+                        var x2 = tx - 3
+                        while (x2 > 2) { if (gx(x2, ty) >= minG && colSupport(x2, T + 2, B - 2) >= needCol) { L = x2; break }; x2-- }
+                        x2 = tx + 3
+                        while (x2 < w - 3) { if (gx(x2, ty) >= minG && colSupport(x2, T + 2, B - 2) >= needCol) { R = x2; break }; x2++ }
+                        val bw = (R - L).toFloat(); val bh = (B - T).toFloat()
+                        val aspect = bw / bh
+                        if (R - L >= 12 && aspect >= 0.12f && aspect <= 8f &&
+                            !(bw > w * 0.92f && bh > h * 0.9f)) {
+                            emitBox(L, T, R, B)
+                            return@Thread
+                        }
+                    }
+                }
+
+                // --- Pass 2: nearest strong edges (small objects, shapes, icons) ---
                 var L = -1; var R = -1
                 var x = tx - 3
                 while (x > 2) { if (gx(x, ty) >= minG && colSupport(x, ty - 24, ty + 24) >= 20) { L = x; break }; x-- }
@@ -274,17 +314,9 @@ class SelectActivity : Activity() {
                 val bw = (R - L).toFloat(); val bh = (B - T).toFloat()
                 val aspect = bw / bh
                 if (aspect < 0.12f || aspect > 8f) return@Thread
-                if (bw > w * 0.92f && bh > h * 0.9f) return@Thread  // whole screen is not a shape
+                if (bw > w * 0.92f && bh > h * 0.9f) return@Thread
 
-                val padX = bw * 0.015f + 1f; val padY = bh * 0.015f + 1f
-                val rect = RectF(
-                    ((L - padX) / sc).coerceIn(0f, full.width - 4f),
-                    ((T - padY) / sc).coerceIn(0f, full.height - 4f),
-                    ((R + padX) / sc).coerceIn(4f, full.width.toFloat()),
-                    ((B + padY) / sc).coerceIn(4f, full.height.toFloat()))
-                runOnUiThread {
-                    if (!isFinishing) confirm(selView.bmpToView(rect), false)
-                }
+                emitBox(L, T, R, B)
             } catch (e: Exception) { }
         }.start()
     }

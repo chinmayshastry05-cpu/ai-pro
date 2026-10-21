@@ -2,11 +2,13 @@
 
 Box any area of your Android screen and act on it with on-device AI — an original, free app inspired by Samsung's AI Select, built for every Android phone (Android 11+).
 
+![AI Pro](docs/screenshots.png)
+
 ## What it does
 
 Enable the AI Pro accessibility service once. After that, opening the app (or the Quick Settings tile, launcher shortcut, edge-panel shortcut, or your assistant button) captures the screen. Drag a box around anything — or just tap a line of text — and AI Pro reads it with on-device machine learning. Nothing you capture ever leaves your phone.
 
-## Features (v0.7.4)
+## Features (v0.7.6)
 
 - **Screen capture** via the accessibility service — no root, no PC needed.
 - **Smart Select**: drag a box and it snaps to the text lines it touches; tap any text line to select it directly; tap a card, icon, image or figure to auto-select the whole shape; crop-style handles to resize the selection.
@@ -19,7 +21,7 @@ Enable the AI Pro accessibility service once. After that, opening the app (or th
 
 ## Install the APK (Samsung phone)
 
-1. On your phone, open the **Releases** page of this repo and download **AI-Pro-v0.7.4.apk**.
+1. On your phone, open the **Releases** page of this repo and download **AI-Pro-v0.7.6.apk**.
 2. Open the downloaded file. Android will warn that the app is from an unknown source — this build is **debug-signed**, so the "unknown developer" warning is expected. Tap **Install anyway** / **Settings → Allow from this source** if asked.
 3. Open **AI Pro** once and tap **Enable AI Pro** — this takes you to Accessibility settings. Turn the AI Pro service **on**. This is the one permission the app needs to capture the screen.
 4. Done. Every time you open the app (or tap its Quick Settings tile), it captures the screen for you to box an area.

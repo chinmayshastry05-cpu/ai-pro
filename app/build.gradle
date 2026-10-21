@@ -1,14 +1,35 @@
 plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+// Signing: when a persistent keystore exists one level above the repo (local build
+// machine only), sign with it so updates install cleanly over each other. The
+// keystore and this properties file are NEVER committed - anyone building the
+// repo straight from GitHub simply gets the normal debug-signed APK.
+def ksProps = new Properties()
+def ksFile = rootProject.file('../keystore.properties')
+def hasReleaseKey = ksFile.exists()
+if (hasReleaseKey) { ksFile.withInputStream { ksProps.load(it) } }
+
 android {
     namespace 'com.aipro.select'
     compileSdk 33
+    signingConfigs {
+        release {
+            storeFile file(ksProps['storeFile'] ?: 'unused')
+            storePassword ksProps['storePassword'] ?: 'unused'
+            keyAlias ksProps['keyAlias'] ?: 'unused'
+            keyPassword ksProps['keyPassword'] ?: 'unused'
+        }
+    }
     defaultConfig {
         applicationId "com.aipro.select"
         minSdk 30
         targetSdk 33
-        versionCode 15
-        versionName "0.7.4"
+        versionCode 17
+        versionName "0.7.6"
         ndk { abiFilters 'arm64-v8a' }
+    }
+    buildTypes {
+        debug { if (hasReleaseKey) signingConfig signingConfigs.release }
+        release { if (hasReleaseKey) signingConfig signingConfigs.release }
     }
     compileOptions { sourceCompatibility JavaVersion.VERSION_11; targetCompatibility JavaVersion.VERSION_11 }
     kotlinOptions { jvmTarget = '11' }
