@@ -11,6 +11,8 @@ import android.content.Intent
 import android.graphics.*
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.CalendarContract
 import android.provider.MediaStore
 import android.view.Gravity
@@ -54,6 +56,13 @@ class SelectActivity : Activity() {
     private lateinit var miniText: TextView
     private var currentText = ""
     private var selViewRect: RectF? = null      // confirmed rect in view coords
+    private val autoSelHandler = Handler(Looper.getMainLooper())
+    private var autoSelRunnable: Runnable? = null
+    private var userTouched = false
+    private var recordMode = false
+    private var recordBar: LinearLayout? = null
+    private var qualityLabel: TextView? = null
+    private var qualityHigh = true
     private val lineBoxes = mutableListOf<RectF>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,11 +98,149 @@ class SelectActivity : Activity() {
         setContentView(root)
         // let the entry animation settle before OCR competes for CPU
         root.postDelayed({ startTapDetectOcr(b) }, 800)
+        // EXPERIMENTAL: idle auto-select - if nothing is touched for 2s and the
+        // screen has one dominant image/photo/thumbnail, select it automatically.
+        // Any touch cancels it; text-heavy screens select nothing.
+        val r = Runnable {
+            if (!userTouched && selViewRect == null && !isFinishing) autoSelectMainImage()
+        }
+        autoSelRunnable = r
+        autoSelHandler.postDelayed(r, 2000)
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) cancelAutoSelect()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun cancelAutoSelect() {
+        userTouched = true
+        autoSelRunnable?.let { autoSelHandler.removeCallbacks(it) }
+    }
+
+    /** Pick the dominant image block on screen (main photo/thumbnail) and select it. Text screens: nothing. */
+    private fun autoSelectMainImage() {
+        val full = bmp ?: return
+        Thread {
+            try {
+                val w = 270
+                val sc = w.toFloat() / full.width
+                val h = (full.height * sc).toInt().coerceAtLeast(2)
+                val small = Bitmap.createScaledBitmap(full, w, h, true)
+                val px = IntArray(w * h)
+                small.getPixels(px, 0, w, 0, 0, w, h)
+                val lum = IntArray(w * h)
+                val colorful = BooleanArray(w * h)
+                for (i in px.indices) {
+                    val c = px[i]
+                    val r = c shr 16 and 0xFF; val g = c shr 8 and 0xFF; val b2 = c and 0xFF
+                    lum[i] = (r * 299 + g * 587 + b2 * 114) / 1000
+                    colorful[i] = maxOf(r, g, b2) - minOf(r, g, b2) > 28
+                }
+                fun gy(x: Int, y: Int) = kotlin.math.abs(lum[(y + 1) * w + x] - lum[(y - 1) * w + x])
+                var sum = 0L; var n = 0
+                var y = 1
+                while (y < h - 1) { var x = 1; while (x < w - 1) { sum += gy(x, y); n++; x += 3 }; y += 3 }
+                val minG = maxOf(20, (sum / maxOf(1, n)) * 2).toInt()
+
+                fun rowSupport(cy: Int, x0: Int, x1: Int): Int {
+                    var s2 = 0
+                    var xx = x0.coerceIn(1, w - 2)
+                    val xe = x1.coerceIn(1, w - 2)
+                    while (xx <= xe) {
+                        if (gy(xx, (cy - 1).coerceIn(1, h - 2)) >= minG || gy(xx, cy) >= minG || gy(xx, (cy + 1).coerceIn(1, h - 2)) >= minG) s2++
+                        xx++
+                    }
+                    return s2
+                }
+
+                fun emitBox(l: Int, t: Int, r: Int, b: Int) {
+                    val bw = (r - l).toFloat(); val bh = (b - t).toFloat()
+                    val padX = bw * 0.01f + 2f; val padY = bh * 0.01f + 2f
+                    val rect = RectF(
+                        ((l - padX) / sc).coerceIn(0f, full.width - 4f),
+                        ((t - padY) / sc).coerceIn(0f, full.height - 4f),
+                        ((r + padX) / sc).coerceIn(4f, full.width.toFloat()),
+                        ((b + padY) / sc).coerceIn(4f, full.height.toFloat()))
+                    runOnUiThread {
+                        if (!isFinishing && !userTouched && selViewRect == null) confirm(selView.bmpToView(rect), false)
+                    }
+                }
+
+                // Pass A: image bands between full-width strong horizontal lines
+                // (feed thumbnails/cards). Pick the largest colorful band.
+                val x0w = (w * 0.06f).toInt(); val x1w = (w * 0.94f).toInt()
+                val need = ((x1w - x0w) * 0.6f).toInt()
+                val lines = ArrayList<Int>()
+                var y2 = 2
+                var lastLine = -10
+                while (y2 < h - 2) {
+                    if (rowSupport(y2, x0w, x1w) >= need) {
+                        if (y2 - lastLine > 3) lines.add(y2)
+                        lastLine = y2
+                    }
+                    y2++
+                }
+                val bounds = ArrayList<Int>()
+                bounds.add(2); bounds.addAll(lines); bounds.add(h - 3)
+                var bestArea = 0; var bT = -1; var bB = -1
+                for (i in 0 until bounds.size - 1) {
+                    val T = bounds[i]; val B = bounds[i + 1]
+                    val bh = B - T
+                    if (bh < 20) continue
+                    val bw = x1w - x0w
+                    var c = 0
+                    for (yy in T + 2 until B - 2) for (xx in x0w until x1w) if (colorful[yy * w + xx]) c++
+                    val cf = c.toFloat() / ((B - T - 4) * (x1w - x0w))
+                    val aspect = bw.toFloat() / bh
+                    if (cf >= 0.5f && aspect >= 0.5f && aspect <= 6f && !(bw > w * 0.92f && bh > h * 0.9f)) {
+                        val area = bw * bh
+                        if (area > bestArea) { bestArea = area; bT = T; bB = B }
+                    }
+                }
+                if (bT >= 0) { emitBox(2, bT, w - 3, bB); return@Thread }
+
+                // Pass B: largest colorful connected component (centered photos etc.)
+                val comp = IntArray(w * h) { -1 }
+                val q = IntArray(w * h)
+                var bestSize = 0; var bestId = -1; var ncomp = 0
+                for (start in 0 until w * h) {
+                    if (!colorful[start] || comp[start] >= 0) continue
+                    var head = 0; var tail = 0
+                    q[tail++] = start; comp[start] = ncomp; var size = 0
+                    while (head < tail) {
+                        val cur = q[head++]; size++
+                        val cx = cur % w; val cy = cur / w
+                        if (cx > 0 && colorful[cur - 1] && comp[cur - 1] < 0) { comp[cur - 1] = ncomp; q[tail++] = cur - 1 }
+                        if (cx < w - 1 && colorful[cur + 1] && comp[cur + 1] < 0) { comp[cur + 1] = ncomp; q[tail++] = cur + 1 }
+                        if (cy > 0 && colorful[cur - w] && comp[cur - w] < 0) { comp[cur - w] = ncomp; q[tail++] = cur - w }
+                        if (cy < h - 1 && colorful[cur + w] && comp[cur + w] < 0) { comp[cur + w] = ncomp; q[tail++] = cur + w }
+                    }
+                    if (size > bestSize) { bestSize = size; bestId = ncomp }
+                    ncomp++
+                }
+                if (bestId < 0 || bestSize < w * h * 0.10f) return@Thread
+                var minX = w; var maxX = 0; var minY = h; var maxY = 0
+                for (yy in 0 until h) for (xx in 0 until w) {
+                    if (comp[yy * w + xx] == bestId) {
+                        if (xx < minX) minX = xx; if (xx > maxX) maxX = xx
+                        if (yy < minY) minY = yy; if (yy > maxY) maxY = yy
+                    }
+                }
+                val bw = (maxX - minX).toFloat(); val bh = (maxY - minY).toFloat()
+                val aspect = bw / bh
+                val fill = bestSize / (bw * bh)
+                if (aspect < 0.25f || aspect > 4f || fill < 0.5f) return@Thread
+                if (bw > w * 0.92f && bh > h * 0.9f) return@Thread
+                emitBox(minX, minY, maxX, maxY)
+            } catch (e: Exception) { }
+        }.start()
     }
 
     // ---------- selection ----------
 
     private fun confirm(viewRect: RectF, fromText: Boolean) {
+        cancelAutoSelect()
         val b = bmp ?: return
         val r = selView.viewToBmp(viewRect)
         cropRectBmp = r
@@ -472,15 +619,145 @@ class SelectActivity : Activity() {
         }
     }
 
+    // ---------- Create GIF (screen-record the selected region) ----------
+
     private fun makeGif() {
+        if (cropRectBmp == null) return
+        enterRecordMode()
+    }
+
+    private fun enterRecordMode() {
+        if (recordMode) return
+        recordMode = true
+        cancelAutoSelect()
+        gifPill.visibility = View.GONE
+        bar.visibility = View.GONE
+        textBar.visibility = View.GONE
+        miniCard.visibility = View.GONE
+        closeChip.visibility = View.GONE
+        selView.recordMode = true
+        selView.invalidate()
+        showRecordBar()
+    }
+
+    private fun exitRecordMode() {
+        if (!recordMode) return
+        recordMode = false
+        selView.recordMode = false
+        selView.invalidate()
+        recordBar?.visibility = View.GONE
+        closeChip.visibility = View.VISIBLE
+        selViewRect?.let { showChrome(false) }
+    }
+
+    private fun showRecordBar() {
+        val d = resources.displayMetrics.density
+        fun dp(v: Float) = (v * d).toInt()
+        val rb = LinearLayout(this)
+        rb.orientation = LinearLayout.HORIZONTAL
+        rb.gravity = Gravity.CENTER_VERTICAL
+        rb.setBackgroundResource(R.drawable.toolbar_bg)
+        rb.setPadding(dp(8f), 0, dp(8f), 0)
+
+        val rec = TextView(this)
+        rec.text = "●  Record"
+        rec.setTextColor(Color.parseColor("#FF5252"))
+        rec.textSize = 15f
+        rec.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+        rec.setOnClickListener { beginRecording() }
+        rb.addView(rec)
+
+        val div1 = View(this)
+        div1.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+        rb.addView(div1, LinearLayout.LayoutParams(dp(1f), dp(24f)))
+
+        val q = TextView(this)
+        q.text = "High quality  ▾"
+        q.setTextColor(Color.WHITE)
+        q.textSize = 15f
+        q.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+        q.setOnClickListener {
+            val pop = android.widget.PopupMenu(this, q)
+            pop.menu.add(0, 1, 0, "High quality  (480px, 10 fps)")
+            pop.menu.add(0, 2, 0, "Standard  (320px, 8 fps)")
+            pop.setOnMenuItemClickListener { item ->
+                qualityHigh = item.itemId == 1
+                q.text = if (qualityHigh) "High quality  ▾" else "Standard  ▾"
+                true
+            }
+            pop.show()
+        }
+        qualityLabel = q
+        rb.addView(q)
+
+        val div2 = View(this)
+        div2.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+        rb.addView(div2, LinearLayout.LayoutParams(dp(1f), dp(24f)))
+
+        val x = TextView(this)
+        x.text = "✕"
+        x.setTextColor(Color.WHITE)
+        x.textSize = 16f
+        x.setPadding(dp(12f), dp(10f), dp(12f), dp(10f))
+        x.setOnClickListener { exitRecordMode() }
+        rb.addView(x)
+
+        val lp = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+        lp.bottomMargin = dp(48f)
+        rb.layoutParams = lp
+        (selView.parent as ViewGroup).addView(rb)
+        recordBar = rb
+    }
+
+    private fun beginRecording() {
+        Shared.projCb = { code, data ->
+            if (code == RESULT_OK && data != null) startRecording(data) else {
+                Toast.makeText(this, "Screen recording permission needed", Toast.LENGTH_SHORT).show()
+            }
+        }
+        startActivity(Intent(this, ProjPermissionActivity::class.java))
+    }
+
+    private fun startRecording(data: android.content.Intent) {
         val r = cropRectBmp ?: return
         val svc = CaptureService.instance
         if (svc == null) { Toast.makeText(this, "Capture service not ready", Toast.LENGTH_SHORT).show(); return }
-        gifPill.alpha = 0f; bar.alpha = 0f; textBar.alpha = 0f; selView.alpha = 0f; closeChip.alpha = 0f; miniCard.alpha = 0f
-        window.decorView.postDelayed({
-            svc.captureGifBurst(r, 5, 900) { }
+        // crop inside the white brackets so they never land in the GIF
+        val inset = (resources.displayMetrics.density * 5).toInt()
+        val i = Intent(this, GifRecorderService::class.java)
+        i.putExtra("code", RESULT_OK)
+        i.putExtra("data", data)
+        i.putExtra("left", r.left + inset)
+        i.putExtra("top", r.top + inset)
+        i.putExtra("right", r.right - inset)
+        i.putExtra("bottom", r.bottom - inset)
+        i.putExtra("targetW", if (qualityHigh) 480 else 320)
+        i.putExtra("frameMs", if (qualityHigh) 100L else 125L)
+        startForegroundService(i)
+        // overlay becomes invisible-but-present: only the white frame stays, and all
+        // touches fall through to the app being recorded
+        recordBar?.visibility = View.GONE
+        selView.recording = true
+        selView.invalidate()
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        Shared.recListener = { status ->
+            if (status == null) finish()
+        }
+    }
+
+    override fun onBackPressed() {
+        if (recordMode && !selView.recording) {
+            exitRecordMode()
+            return
+        }
+        if (selView.recording) {
+            // cancel the recording
+            startService(Intent(this, GifRecorderService::class.java).setAction("cancel"))
             finish()
-        }, 300)
+            return
+        }
+        super.onBackPressed()
     }
 
     // ---------- image actions ----------
@@ -708,6 +985,7 @@ class SelectActivity : Activity() {
     }
 
     override fun onDestroy() {
+        cancelAutoSelect()
         Shared.shot = null
         super.onDestroy()
     }
@@ -724,6 +1002,13 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     private var ox = 0f
     private var oy = 0f
     private var sx = -1f; private var sy = -1f; private var ex = -1f; private var ey = -1f
+    private val dragPath = ArrayList<PointF>()
+    private var pathLen = 0f
+    private var pathTurn = 0f
+    private var lastAng = 0f
+    private var isLasso = false
+    var recordMode = false        // Create GIF prep: white corner brackets, no handles
+    var recording = false         // recording live: brackets only, nothing else drawn
     private var confirmed: RectF? = null
     private var resizeHandle = -1   // 0=TL 1=T 2=TR 3=R 4=BR 5=B 6=BL 7=L
     private var insideDown = false
@@ -752,6 +1037,9 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     }
     private val dragBracket = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = DRAG_BLUE; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
+    }
+    private val recBracket = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeWidth = 3f
     }
     private val bmpShader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
     private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = bmpShader }
@@ -805,6 +1093,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         selGlow2.strokeWidth = dpF(9f)
         dragFaint.strokeWidth = dpF(1.4f)
         dragBracket.strokeWidth = dpF(3.4f)
+        recBracket.strokeWidth = dpF(3.4f)
         // gradient unit line; rotated per frame via local matrix (cheap)
         edgeShader.setLocalMatrix(edgeMatrix)
         selShader.setLocalMatrix(selMatrix)
@@ -843,6 +1132,21 @@ class SelectionView(context: Context, private val bmp: Bitmap,
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (recording) {
+            // live capture: draw ONLY the frame brackets - everything else (dim, chrome,
+            // glow) would be baked into the recording itself
+            val c = confirmed
+            if (c != null) {
+                val arm = dpF(20f)
+                tmpPath.reset()
+                bracket(c.left, c.top, 1f, 1f, arm)
+                bracket(c.right, c.top, -1f, 1f, arm)
+                bracket(c.left, c.bottom, 1f, -1f, arm)
+                bracket(c.right, c.bottom, -1f, -1f, arm)
+                canvas.drawPath(tmpPath, recBracket)
+            }
+            return
+        }
         val dst = RectF(ox, oy, ox + bmp.width * scale, oy + bmp.height * scale)
         canvas.drawBitmap(bmp, null, dst, null)
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), dim)
@@ -857,17 +1161,47 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         }
 
         val dragging = sx >= 0 && ex >= 0
-        val sel = confirmed ?: if (dragging) normRect() else null
+        if (dragging && !isLasso && dragPath.size > 1) {
+            // faint live trail under the box preview: instant feedback that the path is seen
+            tmpPath.reset()
+            tmpPath.moveTo(dragPath[0].x, dragPath[0].y)
+            for (pt in dragPath) tmpPath.lineTo(pt.x, pt.y)
+            canvas.drawPath(tmpPath, dragBracket)
+        }
+        if (dragging && isLasso && dragPath.size > 1) {
+            // circle-to-search trail: pastel gradient along the drawn path
+            tmpPath.reset()
+            tmpPath.moveTo(dragPath[0].x, dragPath[0].y)
+            for (pt in dragPath) tmpPath.lineTo(pt.x, pt.y)
+            selMatrix.setRotate(angle, ex, ey)
+            selShader.setLocalMatrix(selMatrix)
+            selGlow2.alpha = 40; selGlow1.alpha = 80; selMain.alpha = 255
+            canvas.drawPath(tmpPath, selGlow2)
+            canvas.drawPath(tmpPath, selGlow1)
+            canvas.drawPath(tmpPath, selMain)
+        }
+        val sel = confirmed ?: if (dragging && !isLasso) normRect() else null
         if (sel != null) {
             canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
             if (confirmed != null) {
-                selMatrix.setRotate(angle, sel.centerX(), sel.centerY())
-                selShader.setLocalMatrix(selMatrix)
-                val grow = (1f - pulse) * dpF(10f)
-                val pr = RectF(sel)
-                pr.inset(-grow, -grow)
-                selGlow2.alpha = (40 * pulse).toInt(); selGlow1.alpha = (80 * pulse).toInt(); selMain.alpha = (255 * pulse).toInt()
-                drawGlowSet(canvas, pr, selRadius + grow, selGlow2, selGlow1, selMain)
+                if (recordMode) {
+                    // Create GIF prep: plain white square-corner brackets, no gradient, no pulse
+                    val arm = dpF(20f)
+                    tmpPath.reset()
+                    bracket(sel.left, sel.top, 1f, 1f, arm)
+                    bracket(sel.right, sel.top, -1f, 1f, arm)
+                    bracket(sel.left, sel.bottom, 1f, -1f, arm)
+                    bracket(sel.right, sel.bottom, -1f, -1f, arm)
+                    canvas.drawPath(tmpPath, recBracket)
+                } else {
+                    selMatrix.setRotate(angle, sel.centerX(), sel.centerY())
+                    selShader.setLocalMatrix(selMatrix)
+                    val grow = (1f - pulse) * dpF(10f)
+                    val pr = RectF(sel)
+                    pr.inset(-grow, -grow)
+                    selGlow2.alpha = (40 * pulse).toInt(); selGlow1.alpha = (80 * pulse).toInt(); selMain.alpha = (255 * pulse).toInt()
+                    drawGlowSet(canvas, pr, selRadius + grow, selGlow2, selGlow1, selMain)
+                }
             } else {
                 canvas.drawRoundRect(sel, selRadius, selRadius, dragFaint)
                 val arm = dpF(20f)
@@ -925,6 +1259,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        if (recordMode) return true   // frame is fixed while setting up / running a recording
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val h = handleAt(e.x, e.y)
@@ -937,6 +1272,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     sx = e.x; sy = e.y; ex = e.x; ey = e.y
                     confirmed = null          // fresh drag outside: new selection
                     pulse = 1f
+                    dragPath.clear(); dragPath.add(PointF(e.x, e.y)); pathLen = 0f; pathTurn = 0f; lastAng = 0f; isLasso = false
                     onDragStart()
                 }
                 invalidate()
@@ -946,7 +1282,28 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     applyResize(e.x, e.y)
                     onResizeLive(RectF(confirmed!!))
                 } else if (!insideDown && sx >= 0) {
+                    val lx = ex; val ly = ey
                     ex = e.x; ey = e.y
+                    val seg = kotlin.math.hypot(ex - lx, ey - ly)
+                    if (seg > dpF(2f)) {
+                        dragPath.add(PointF(ex, ey)); pathLen += seg
+                        // circle-to-search: any roughly circular / curvy path is a lasso.
+                        // A box drag is one straight diagonal: it never curves much and
+                        // never comes back near its start.
+                        val ang = kotlin.math.atan2(ey - ly, ex - lx)
+                        if (lastAng != 0f) {
+                            var d = ang - lastAng
+                            while (d > Math.PI) d -= (2 * Math.PI).toFloat()
+                            while (d < -Math.PI) d += (2 * Math.PI).toFloat()
+                            pathTurn += kotlin.math.abs(d)
+                        }
+                        lastAng = ang
+                        if (!isLasso && dragPath.size > 8 && pathLen > dpF(100f)) {
+                            val p0 = dragPath[0]
+                            val closure = kotlin.math.hypot(ex - p0.x, ey - p0.y)
+                            if (closure < dpF(90f) || closure < pathLen * 0.22f || pathTurn > 3.6f) isLasso = true
+                        }
+                    }
                 }
                 invalidate()
             }
@@ -964,6 +1321,21 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     return true
                 }
                 ex = e.x; ey = e.y
+                if (isLasso && dragPath.size > 8) {
+                    var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var rr = 0f; var bb = 0f
+                    for (pt in dragPath) {
+                        if (pt.x < l) l = pt.x; if (pt.y < t) t = pt.y
+                        if (pt.x > rr) rr = pt.x; if (pt.y > bb) bb = pt.y
+                    }
+                    val lp = dpF(6f)
+                    l = max(ox, l - lp); t = max(oy, t - lp)
+                    rr = min(ox + bmp.width * scale, rr + lp); bb = min(oy + bmp.height * scale, bb + lp)
+                    val lr = RectF(l, t, rr, bb)
+                    sx = -1f; ex = -1f; isLasso = false; dragPath.clear(); invalidate()
+                    if (lr.width() > 30 && lr.height() > 30) onFreePick(lr)
+                    return true
+                }
+                isLasso = false; dragPath.clear()
                 val r = normRect()
                 val moved = kotlin.math.abs(ex - sx) > 16 || kotlin.math.abs(ey - sy) > 16
                 if (!moved) {

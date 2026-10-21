@@ -8,14 +8,16 @@ Box any area of your Android screen and act on it with on-device AI — an origi
 
 Enable the AI Pro accessibility service once. After that, opening the app (or the Quick Settings tile, launcher shortcut, edge-panel shortcut, or your assistant button) captures the screen. Drag a box around anything — or just tap a line of text — and AI Pro reads it with on-device machine learning. Nothing you capture ever leaves your phone.
 
-## Features (v0.7.6)
+## Features (v0.8.0)
 
 - **Screen capture** via the accessibility service — no root, no PC needed.
-- **Smart Select**: drag a box and it snaps to the text lines it touches; tap any text line to select it directly; tap a card, icon, image or figure to auto-select the whole shape; crop-style handles to resize the selection.
+- **Tap to select**: tap any text, image or shape on screen; copy, share, pin or save it.
+- **Lasso**: draw a rough circle around content to auto-select it.
+- **Idle auto-select**: leave it for a couple of seconds and AI Pro picks the most likely content for you.
+- **Create GIF**: record the selected area for up to 30 seconds with a High/Standard quality toggle, then pin, share or save the GIF.
 - **On-device OCR** — English (Latin script) + Hindi (Devanagari), via Google ML Kit. No internet needed for reading.
 - **Text actions**: Translate (English ↔ Hindi, auto-detected), Copy, Share, Search, Add event (finds dates/times in the text and opens your calendar).
 - **Image actions**: Pin (floating always-on-top image — drag to move, tap to close), Copy image, Share, Save to Gallery, visual search via Google Lens.
-- **Create GIF**: record a small region of the screen as an animated GIF, saved to your Gallery.
 - **Share any image** to AI Pro from another app to read it.
 - Dark UI with gold accents.
 
