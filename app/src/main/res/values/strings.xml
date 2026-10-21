@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AI Pro</string>
+    <string name="a11y_desc">AI Pro uses this to capture the screen only when you start a capture, so it can read the text in the area you select. Nothing leaves your phone.</string>
+    <string name="sc_capture">Capture now</string>
+</resources>

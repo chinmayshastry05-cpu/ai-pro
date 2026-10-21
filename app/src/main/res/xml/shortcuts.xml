@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="capture"
+        android:enabled="true"
+        android:icon="@drawable/bubble"
+        android:shortcutShortLabel="@string/sc_capture"
+        android:shortcutLongLabel="@string/sc_capture">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.aipro.select"
+            android:targetClass="com.aipro.select.CaptureActivity"/>
+    </shortcut>
+</shortcuts>

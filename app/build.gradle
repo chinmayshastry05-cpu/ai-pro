@@ -1,0 +1,23 @@
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+android {
+    namespace 'com.aipro.select'
+    compileSdk 33
+    defaultConfig {
+        applicationId "com.aipro.select"
+        minSdk 30
+        targetSdk 33
+        versionCode 12
+        versionName "0.7.1"
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_11; targetCompatibility JavaVersion.VERSION_11 }
+    kotlinOptions { jvmTarget = '11' }
+}
+dependencies {
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.8.21'
+    implementation 'com.google.mlkit:text-recognition:16.0.1'
+    implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'
+    implementation 'com.google.mlkit:translate:17.0.3'
+    implementation 'com.google.mlkit:language-id:17.0.5'
+    implementation 'com.google.mlkit:entity-extraction:16.0.0-beta5'
+}
