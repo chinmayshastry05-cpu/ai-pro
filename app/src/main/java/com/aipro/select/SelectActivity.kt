@@ -627,9 +627,9 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     private val dragBracket = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = DRAG_BLUE; style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND
     }
-    private val handleDot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFFFFF.toInt(); style = Paint.Style.FILL; alpha = 235
-    }
+    private val bmpShader = BitmapShader(bmp, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+    private val bmpPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = bmpShader }
+    private val bmpMatrix = Matrix()
     private var cx = 0f; private var cy = 0f
     private var edgeRect = RectF(); private var edgeRadius = 0f; private var selRadius = 0f
 
@@ -664,10 +664,13 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         ox = (w - bmp.width * scale) / 2f
         oy = (h - bmp.height * scale) / 2f
         cx = w / 2f; cy = h / 2f
+        bmpMatrix.setScale(scale, scale)
+        bmpMatrix.postTranslate(ox, oy)
+        bmpShader.setLocalMatrix(bmpMatrix)
         val inset = dpF(2f)
         edgeRect = RectF(inset, inset, w - inset, h - inset)
         edgeRadius = dpF(18f)
-        selRadius = dpF(14f)
+        selRadius = dpF(24f)
         edgeMain.strokeWidth = dpF(3.2f)
         edgeGlow1.strokeWidth = dpF(6.5f)
         edgeGlow2.strokeWidth = dpF(11f)
@@ -708,6 +711,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
 
     private fun drawGlowSet(canvas: Canvas, r: RectF, radius: Float, g2: Paint, g1: Paint, main: Paint) {
         canvas.drawRoundRect(r, radius, radius, g2)
+        canvas.drawRoundRect(r, radius, radius, g1)
         canvas.drawRoundRect(r, radius, radius, main)
     }
 
@@ -729,10 +733,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         val dragging = sx >= 0 && ex >= 0
         val sel = confirmed ?: if (dragging) normRect() else null
         if (sel != null) {
-            canvas.save()
-            canvas.clipRect(sel)
-            canvas.drawBitmap(bmp, null, dst, null)
-            canvas.restore()
+            canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
             if (confirmed != null) {
                 selMatrix.setRotate(angle, sel.centerX(), sel.centerY())
                 selShader.setLocalMatrix(selMatrix)
@@ -741,16 +742,6 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                 pr.inset(-grow, -grow)
                 selGlow2.alpha = (40 * pulse).toInt(); selGlow1.alpha = (80 * pulse).toInt(); selMain.alpha = (255 * pulse).toInt()
                 drawGlowSet(canvas, pr, selRadius + grow, selGlow2, selGlow1, selMain)
-                // draggable handle hints (crop-style): dots at corners + edge midpoints
-                val hd = dpF(3.6f)
-                canvas.drawCircle(sel.left, sel.top, hd, handleDot)
-                canvas.drawCircle(sel.centerX(), sel.top, hd, handleDot)
-                canvas.drawCircle(sel.right, sel.top, hd, handleDot)
-                canvas.drawCircle(sel.right, sel.centerY(), hd, handleDot)
-                canvas.drawCircle(sel.right, sel.bottom, hd, handleDot)
-                canvas.drawCircle(sel.centerX(), sel.bottom, hd, handleDot)
-                canvas.drawCircle(sel.left, sel.bottom, hd, handleDot)
-                canvas.drawCircle(sel.left, sel.centerY(), hd, handleDot)
             } else {
                 canvas.drawRoundRect(sel, selRadius, selRadius, dragFaint)
                 val arm = dpF(20f)
