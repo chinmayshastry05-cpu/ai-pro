@@ -87,6 +87,11 @@ class SelectActivity : Activity() {
         buildMiniCard(); root.addView(miniCard)
         buildCloseChip(); root.addView(closeChip)
         setContentView(root)
+        // we are on screen now: close the MainActivity hold screen behind us
+        root.post {
+            Shared.closeMain?.invoke()
+            Shared.closeMain = null
+        }
         // let the entry animation settle before OCR competes for CPU
         root.postDelayed({ startTapDetectOcr(b) }, 800)
     }
@@ -177,7 +182,6 @@ class SelectActivity : Activity() {
     }
 
     private fun tapDetect(viewX: Float, viewY: Float) {
-        if (lineBoxes.isEmpty()) return
         val p = selView.viewToBmpPoint(viewX, viewY)
         var best: RectF? = null
         for (box in lineBoxes) {
@@ -185,7 +189,9 @@ class SelectActivity : Activity() {
                 if (best == null || box.width() * box.height() < best!!.width() * best!!.height()) best = RectF(box)
             }
         }
-        if (best != null) {
+        if (best == null) { shapeDetect(viewX, viewY); return }
+        run {
+            val best = best!!
             best.inset(-10f, -10f)
             best.left = best.left.coerceIn(0f, bmp!!.width - 4f)
             best.right = best.right.coerceIn(best.left + 4f, bmp!!.width.toFloat())
@@ -193,6 +199,94 @@ class SelectActivity : Activity() {
             best.bottom = best.bottom.coerceIn(best.top + 4f, bmp!!.height.toFloat())
             confirm(selView.bmpToView(best), true)
         }
+    }
+
+    /**
+     * Smart Select style tap-to-select: tap a card, icon, image or any figure on screen
+     * and the whole shape gets selected. Pure on-device edge detection, no network, no
+     * ML models: downscale the screenshot, find the nearest strong vertical/horizontal
+     * edges around the tap that have real support (a shape boundary, not text noise),
+     * and box them. The result is a normal confirmed selection - rounded border, live
+     * resizable via the crop handles like any other selection.
+     */
+    private fun shapeDetect(viewX: Float, viewY: Float) {
+        val full = bmp ?: return
+        Thread {
+            try {
+                val w = 270
+                val sc = w.toFloat() / full.width
+                val h = (full.height * sc).toInt().coerceAtLeast(2)
+                val small = Bitmap.createScaledBitmap(full, w, h, true)
+                val px = IntArray(w * h)
+                small.getPixels(px, 0, w, 0, 0, w, h)
+                val lum = IntArray(w * h)
+                for (i in px.indices) {
+                    val c = px[i]
+                    lum[i] = ((c shr 16 and 0xFF) * 299 + (c shr 8 and 0xFF) * 587 + (c and 0xFF) * 114) / 1000
+                }
+                fun gx(x: Int, y: Int) = kotlin.math.abs(lum[y * w + x + 1] - lum[y * w + x - 1])
+                fun gy(x: Int, y: Int) = kotlin.math.abs(lum[(y + 1) * w + x] - lum[(y - 1) * w + x])
+                var sum = 0L; var n = 0
+                var y = 1
+                while (y < h - 1) { var x = 1; while (x < w - 1) { sum += gx(x, y) + gy(x, y); n++; x += 3 }; y += 3 }
+                val minG = maxOf(20, (sum / maxOf(1, n)) * 3).toInt()
+
+                val tp = selView.viewToBmpPoint(viewX, viewY)
+                val tx = (tp.x * sc).toInt().coerceIn(2, w - 3)
+                val ty = (tp.y * sc).toInt().coerceIn(2, h - 3)
+
+                fun colSupport(cx: Int, y0: Int, y1: Int): Int {
+                    var s2 = 0
+                    var yy = y0.coerceIn(1, h - 2)
+                    val ye = y1.coerceIn(1, h - 2)
+                    while (yy <= ye) {
+                        if (gx((cx - 1).coerceIn(1, w - 2), yy) >= minG || gx(cx, yy) >= minG || gx((cx + 1).coerceIn(1, w - 2), yy) >= minG) s2++
+                        yy++
+                    }
+                    return s2
+                }
+                fun rowSupport(cy: Int, x0: Int, x1: Int): Int {
+                    var s2 = 0
+                    var xx = x0.coerceIn(1, w - 2)
+                    val xe = x1.coerceIn(1, w - 2)
+                    while (xx <= xe) {
+                        if (gy(xx, (cy - 1).coerceIn(1, h - 2)) >= minG || gy(xx, cy) >= minG || gy(xx, (cy + 1).coerceIn(1, h - 2)) >= minG) s2++
+                        xx++
+                    }
+                    return s2
+                }
+
+                var L = -1; var R = -1
+                var x = tx - 3
+                while (x > 2) { if (gx(x, ty) >= minG && colSupport(x, ty - 24, ty + 24) >= 20) { L = x; break }; x-- }
+                x = tx + 3
+                while (x < w - 3) { if (gx(x, ty) >= minG && colSupport(x, ty - 24, ty + 24) >= 20) { R = x; break }; x++ }
+                if (L < 0 || R < 0 || R - L < 12) return@Thread
+
+                var T = -1; var B = -1
+                val needRow = ((R - L - 4) * 0.38f).toInt().coerceAtLeast(8)
+                y = ty - 3
+                while (y > 2) { if (gy(tx, y) >= minG && rowSupport(y, L + 2, R - 2) >= needRow) { T = y; break }; y-- }
+                y = ty + 3
+                while (y < h - 3) { if (gy(tx, y) >= minG && rowSupport(y, L + 2, R - 2) >= needRow) { B = y; break }; y++ }
+                if (T < 0 || B < 0 || B - T < 12) return@Thread
+
+                val bw = (R - L).toFloat(); val bh = (B - T).toFloat()
+                val aspect = bw / bh
+                if (aspect < 0.12f || aspect > 8f) return@Thread
+                if (bw > w * 0.92f && bh > h * 0.9f) return@Thread  // whole screen is not a shape
+
+                val padX = bw * 0.015f + 1f; val padY = bh * 0.015f + 1f
+                val rect = RectF(
+                    ((L - padX) / sc).coerceIn(0f, full.width - 4f),
+                    ((T - padY) / sc).coerceIn(0f, full.height - 4f),
+                    ((R + padX) / sc).coerceIn(4f, full.width.toFloat()),
+                    ((B + padY) / sc).coerceIn(4f, full.height.toFloat()))
+                runOnUiThread {
+                    if (!isFinishing) confirm(selView.bmpToView(rect), false)
+                }
+            } catch (e: Exception) { }
+        }.start()
     }
 
     private fun startTapDetectOcr(b: Bitmap) {
