@@ -43,3 +43,23 @@ jobs:
         with:
           name: test-results
           path: ci/out/
+      - name: build release APK
+        run: gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+      - name: sign release APK
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          echo "$KS_B64" | base64 -d > /tmp/ks.jks
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          "$BT/zipalign" -f 4 app/build/outputs/apk/release/app-release-unsigned.apk /tmp/aligned.apk
+          "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" --ks-key-alias "$KEY_ALIAS" --out /tmp/AIPro-signed.apk /tmp/aligned.apk
+          "$BT/apksigner" verify --print-certs /tmp/AIPro-signed.apk
+          sha256sum /tmp/AIPro-signed.apk
+      - name: upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release
+          path: /tmp/AIPro-signed.apk
