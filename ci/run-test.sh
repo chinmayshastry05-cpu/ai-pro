@@ -91,6 +91,12 @@ CX1=$((W * 27 / 100)); CY1=$((H * 26 / 100)); CX2=$((W * 60 / 100))
 adb shell input swipe $CX1 $CY1 $CX2 $CY1 2200 &
 sleep 1
 adb shell screencap -p /sdcard/07-cursordrag.png
+# magnifier evidence: the loupe is a system-rendered overlay - capture the window
+# list + surface list mid-drag to prove show() ran even if screencap misses it
+adb shell dumpsys window windows > $OUT/dumpsys-cursordrag.txt 2>&1
+adb shell uiautomator dump /sdcard/ui-magnifier.xml && adb pull /sdcard/ui-magnifier.xml $OUT/ui-magnifier.xml 2>/dev/null
+sleep 0.4
+adb shell screencap -p /sdcard/07b-cursordrag.png
 wait
 sleep 2
 adb shell pidof $PKG > $OUT/pid-after-cursor.txt || echo "PROCESS DEAD after cursor drag" >> $OUT/verdict-crash.txt
@@ -110,5 +116,5 @@ adb shell screencap -p /sdcard/05-after.png
 adb shell pidof $PKG > $OUT/pid-final.txt || echo "PROCESS DEAD at end" >> $OUT/verdict-crash.txt
 adb logcat -d > $OUT/logcat.txt
 grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/logcat.txt > $OUT/logcat-fatal-count.txt || true
-for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after 06-taphold 07-cursordrag 08-cursordone; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
+for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after 06-taphold 07-cursordrag 07b-cursordrag 08-cursordone; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
 echo "=== VERDICTS ==="; cat $OUT/verdict-*.txt $OUT/logcat-fatal-count.txt 2>/dev/null
