@@ -44,7 +44,7 @@ sleep 3
 SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}')
 W=${SIZE%x*}; H=${SIZE#*x}
 echo "SCREEN=$SIZE" | tee $OUT/screen.txt
-SWY=$((H * 19 / 100)); X1=$((W * 8 / 100)); X2=$((W * 92 / 100)); TX=$((W * 30 / 100))
+SWY=$((H * 19 / 100)); X1=$((W * 8 / 100)); X2=$((W * 92 / 100)); TX=$((W * 30 / 100)); SY1=$((H * 17 / 100)); SY2=$((H * 27 / 100))
 
 adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html"
 for i in 1 2 3 4 5 6; do
@@ -64,7 +64,7 @@ for i in 1 2 3; do tap_text "Wait" && echo "dismissed ANR dialog"; tap_text "No 
 adb shell dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" > $OUT/focus.txt
 adb shell screencap -p /sdcard/02-overlay.png
 
-adb shell input swipe $X1 $SWY $X2 $SWY 700
+adb shell input swipe $X1 $SY1 $X2 $SY2 700   # diagonal box drag: horizontal-only swipe yields a zero-height rect the app discards
 sleep 5
 tap_text "Wait" && echo "dismissed ANR dialog"
 adb shell screencap -p /sdcard/03-dragselect.png
