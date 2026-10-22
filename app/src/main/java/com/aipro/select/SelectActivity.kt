@@ -2,6 +2,7 @@ package com.aipro.select
 
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.SearchManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -29,7 +30,10 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.io.FileOutputStream
@@ -53,6 +57,7 @@ class SelectActivity : Activity() {
     private lateinit var gifPill: LinearLayout  // "Create GIF" pill above selection
     private lateinit var closeChip: TextView
     private lateinit var miniCard: LinearLayout // translate output card
+    private lateinit var textChip: LinearLayout // CTS-style "Copy | Translate" chip above selection
     private lateinit var miniText: TextView
     private var currentText = ""
     private var selViewRect: RectF? = null      // confirmed rect in view coords
@@ -64,9 +69,14 @@ class SelectActivity : Activity() {
     private var qualityLabel: TextView? = null
     private var qualityHigh = true
     private val lineBoxes = mutableListOf<RectF>()
+    private val wordBoxes = mutableListOf<RectF>()
+    private val tapOcrDone = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var tapRetryPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Ocr.init(this)   // warm Tesseract (Kannada/Hindi/English) off the main thread
+        warmTranslateModels()   // pre-download translation packs so Translate is instant later
         val b = Shared.shot
         if (b == null) { finish(); return }
         bmp = b
@@ -84,7 +94,11 @@ class SelectActivity : Activity() {
         root.setBackgroundColor(Color.TRANSPARENT)
 
         selView = SelectionView(this, b,
-            onFreePick = { vr -> confirm(snapToText(vr), false) },
+            onFreePick = { vr ->
+                val tu = textUnion(vr)
+                if (tu != null && tu.width() * tu.height() >= vr.width() * vr.height() * 0.35f) confirmText(tu)
+                else confirm(snapToText(vr), false)
+            },
             onTap = { x, y -> tapDetect(x, y) },
             onDragStart = { hideChrome() },
             onResizeLive = { vr -> selViewRect = vr; repositionChrome() },
@@ -94,10 +108,11 @@ class SelectActivity : Activity() {
         buildBar(); root.addView(bar)
         buildTextBar(); root.addView(textBar)
         buildMiniCard(); root.addView(miniCard)
+        buildTextChip(); root.addView(textChip)
         buildCloseChip(); root.addView(closeChip)
         setContentView(root)
-        // let the entry animation settle before OCR competes for CPU
-        root.postDelayed({ startTapDetectOcr(b) }, 800)
+        // start tap-detect OCR immediately so early taps already have boxes
+        root.post { startTapDetectOcr(b) }
         // EXPERIMENTAL: idle auto-select - if nothing is touched for 2s and the
         // screen has one dominant image/photo/thumbnail, select it automatically.
         // Any touch cancels it; text-heavy screens select nothing.
@@ -243,12 +258,66 @@ class SelectActivity : Activity() {
         cancelAutoSelect()
         val b = bmp ?: return
         val r = selView.viewToBmp(viewRect)
+        if (r.width() < 2 || r.height() < 2) return
         cropRectBmp = r
         cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
         selViewRect = viewRect
+        selView.textMode = false
+        selView.setTextLines(emptyList())
+        textChip.visibility = View.GONE
         selView.setConfirmed(viewRect)
         showChrome(fromText)
         if (fromText) readText()
+    }
+
+    /** Circle-to-search text selection: per-line highlight, staggered wipe, Copy/Translate chip. */
+    private fun confirmText(viewRect: RectF, highlight: List<RectF>? = null) {
+        cancelAutoSelect()
+        val b = bmp ?: return
+        val r = selView.viewToBmp(viewRect)
+        cropRectBmp = r
+        cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
+        selViewRect = viewRect
+        selView.textMode = true
+        selView.setTextLines(highlight ?: linesInView(viewRect))
+        selView.setConfirmed(viewRect)
+        showChrome(true)
+        gifPill.visibility = View.GONE // CTS look: the Copy | Translate chip takes that slot
+        showTextChip(viewRect)
+        readText()
+    }
+
+    /** Text lines (view coords) touched by a selection, top-to-bottom like CTS highlights. */
+    private fun linesInView(v: RectF): List<RectF> {
+        val rb = RectF(selView.viewToBmp(v))
+        return lineBoxes.filter { RectF.intersects(it, rb) }
+            .map { RectF(selView.bmpToView(it)) }
+            .sortedWith(compareBy({ it.top }, { it.left }))
+    }
+
+    /** Like snapToText but returns null when the drag covers no text (image stays a box). */
+    private fun textUnion(v: RectF): RectF? {
+        if (lineBoxes.isEmpty()) return null
+        val rb = RectF(selView.viewToBmp(v))
+        var union: RectF? = null
+        val tmp = RectF()
+        for (lb in lineBoxes) {
+            if (RectF.intersects(rb, lb)) {
+                tmp.setIntersect(rb, lb)
+                if (tmp.width() * tmp.height() > lb.width() * lb.height() * 0.25f) {
+                    if (union == null) union = RectF(lb) else union.union(lb)
+                }
+            }
+        }
+        val u = union ?: return null
+        if (u.width() * u.height() > rb.width() * rb.height() * 9f) return null
+        u.inset(-8f, -8f)
+        val b = bmp ?: return null
+        u.left = u.left.coerceIn(0f, b.width - 4f)
+        u.right = u.right.coerceIn(u.left + 4f, b.width.toFloat())
+        u.top = u.top.coerceIn(0f, b.height - 4f)
+        u.bottom = u.bottom.coerceIn(u.top + 4f, b.height.toFloat())
+        return selView.bmpToView(u)
     }
 
     /** Crop-style resize finished: recrop, replay the confirm pulse, refresh OCR if in text mode. */
@@ -260,6 +329,7 @@ class SelectActivity : Activity() {
         selViewRect = viewRect
         selView.setConfirmed(viewRect)
         repositionChrome()
+        if (selView.textMode) selView.setTextLines(linesInView(viewRect))
         if (textBar.visibility == View.VISIBLE) readText()
     }
 
@@ -296,6 +366,9 @@ class SelectActivity : Activity() {
         bar.visibility = View.GONE
         textBar.visibility = View.GONE
         miniCard.visibility = View.GONE
+        if (::textChip.isInitialized) textChip.visibility = View.GONE
+        selView.textMode = false
+        selView.setTextLines(emptyList())
         currentText = ""
     }
 
@@ -326,12 +399,26 @@ class SelectActivity : Activity() {
     private fun tapDetect(viewX: Float, viewY: Float) {
         val p = selView.viewToBmpPoint(viewX, viewY)
         var best: RectF? = null
-        for (box in lineBoxes) {
-            if (box.contains(p.x, p.y)) {
+        for (box in wordBoxes + lineBoxes) {
+            val hit = RectF(box)
+            hit.inset(-6f, -6f) // forgiving hit-test: tight Indic line boxes miss edge taps
+            if (hit.contains(p.x, p.y)) {
                 if (best == null || box.width() * box.height() < best!!.width() * best!!.height()) best = RectF(box)
             }
         }
-        if (best == null) { shapeDetect(viewX, viewY); return }
+        if (best == null) {
+            // recognizers finish asynchronously; retry the same tap once before
+            // falling back to shape detection so an early tap on text selects it
+            if (tapOcrDone.get() < 5 && !tapRetryPending) {
+                tapRetryPending = true
+                selView.postDelayed({
+                    tapRetryPending = false
+                    if (!isFinishing && selView.confirmedRect() == null) tapDetect(viewX, viewY)
+                }, 350)
+                return
+            }
+            shapeDetect(viewX, viewY); return
+        }
         run {
             val best = best!!
             best.inset(-10f, -10f)
@@ -339,7 +426,8 @@ class SelectActivity : Activity() {
             best.right = best.right.coerceIn(best.left + 4f, bmp!!.width.toFloat())
             best.top = best.top.coerceIn(0f, bmp!!.height - 4f)
             best.bottom = best.bottom.coerceIn(best.top + 4f, bmp!!.height.toFloat())
-            confirm(selView.bmpToView(best), true)
+            val bv = selView.bmpToView(best)
+            confirmText(bv, listOf(RectF(bv)))
         }
     }
 
@@ -470,10 +558,22 @@ class SelectActivity : Activity() {
 
     private fun startTapDetectOcr(b: Bitmap) {
         val img = InputImage.fromBitmap(b, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
-        latin.process(img).addOnSuccessListener { r -> for (blk in r.textBlocks) for (ln in blk.lines) ln.boundingBox?.let { lineBoxes.add(RectF(it)) } }
-        deva.process(img).addOnSuccessListener { r -> for (blk in r.textBlocks) for (ln in blk.lines) ln.boundingBox?.let { lineBoxes.add(RectF(it)) } }
+        val recognizers = listOf(
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS),
+            TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build()))
+        for (rec in recognizers) {
+            rec.process(img).addOnSuccessListener { r ->
+                tapOcrDone.incrementAndGet()
+                for (blk in r.textBlocks) for (ln in blk.lines) {
+                    ln.boundingBox?.let { lineBoxes.add(RectF(it)) }
+                    for (el in ln.elements) el.boundingBox?.let { wordBoxes.add(RectF(it)) }
+                }
+                runOnUiThread { selView.ocrLines = lineBoxes.map { RectF(selView.bmpToView(it)) } }
+            }.addOnFailureListener { tapOcrDone.incrementAndGet() }
+        }
     }
 
     // ---------- chrome (pill, bars, chips) ----------
@@ -827,9 +927,6 @@ class SelectActivity : Activity() {
     }
 
     private fun runOcrForSearch(crop: Bitmap) {
-        val img = InputImage.fromBitmap(crop, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
         fun go(q: String) {
             if (q.isBlank()) { Toast.makeText(this, "No text to search", Toast.LENGTH_SHORT).show(); finish(); return }
             try {
@@ -841,14 +938,9 @@ class SelectActivity : Activity() {
             }
             finish()
         }
-        latin.process(img).addOnSuccessListener { lr ->
-            deva.process(img).addOnSuccessListener { dr ->
-                go(if (dr.text.trim().length > lr.text.trim().length) dr.text.trim() else lr.text.trim())
-            }.addOnFailureListener { go(lr.text.trim()) }
-        }.addOnFailureListener {
-            deva.process(img).addOnSuccessListener { dr -> go(dr.text.trim()) }
-                .addOnFailureListener { Toast.makeText(this, "Read failed", Toast.LENGTH_SHORT).show(); finish() }
-        }
+        val fromScreen = textFromNodes()
+        if (fromScreen.isNotEmpty()) { go(fromScreen); return }
+        Ocr.recognize(this, crop) { txt, _ -> go(txt) }
     }
 
     private fun pinImage() {
@@ -865,27 +957,88 @@ class SelectActivity : Activity() {
     private fun switchToTextMode() {
         bar.visibility = View.GONE
         textBar.visibility = View.VISIBLE
+        selView.textMode = true
+        selViewRect?.let { selView.setTextLines(linesInView(it)) }
         showChrome(true)
+        gifPill.visibility = View.GONE
+        selViewRect?.let { showTextChip(it) }
         readText()
+    }
+
+    /** CTS-style floating chip: dark capsule with Copy and Translate, above the highlight. */
+    private fun buildTextChip() {
+        textChip = LinearLayout(this)
+        textChip.orientation = LinearLayout.HORIZONTAL
+        textChip.gravity = Gravity.CENTER_VERTICAL
+        textChip.setBackgroundResource(R.drawable.toolbar_bg)
+        fun chipBtn(label: String, act: () -> Unit): TextView {
+            val tv = TextView(this)
+            tv.text = label
+            tv.setTextColor(Color.WHITE)
+            tv.textSize = 14.5f
+            tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            tv.setPadding(dp(16f), dp(9f), dp(16f), dp(9f))
+            tv.setOnClickListener { act() }
+            return tv
+        }
+        textChip.addView(chipBtn("Copy") { copyText() })
+        val div = View(this)
+        div.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+        textChip.addView(div, LinearLayout.LayoutParams(dp(1f), dp(20f)))
+        textChip.addView(chipBtn("Translate") { translateText() })
+        textChip.visibility = View.GONE
+    }
+
+    private fun showTextChip(r: RectF) {
+        textChip.visibility = View.VISIBLE
+        textChip.scaleX = 0.6f; textChip.scaleY = 0.6f; textChip.alpha = 0f
+        textChip.post {
+            val parent = textChip.parent as View
+            val cw = textChip.width; val ch = textChip.height
+            val x = (r.centerX() - cw / 2f).coerceIn(dp(10f).toFloat(), parent.width - cw - dp(10f).toFloat())
+            var y = r.top - ch - dp(10f)
+            if (y < dp(44f)) y = (r.bottom + dp(10f)).coerceAtMost((parent.height - ch - dp(10f)).toFloat())
+            textChip.translationX = x
+            textChip.translationY = y
+            textChip.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(220).setInterpolator(OvershootInterpolator(1.6f)).start()
+        }
     }
 
     private fun readText() {
         val c = cropBmp ?: return
-        Toast.makeText(this, "Reading text...", Toast.LENGTH_SHORT).show()
+        // real text from the app itself first - exact Unicode, every language, zero OCR error
+        val fromScreen = textFromNodes()
+        if (fromScreen.isNotEmpty()) { finishOcr(fromScreen); return }
         runOcr(c)
     }
 
+    /** Text of the on-screen nodes inside the current selection (dumped at capture time). */
+    private fun textFromNodes(): String {
+        val r = cropRectBmp ?: return ""
+        val sel = RectF(r)
+        val nodes = Shared.nodeTexts
+        if (nodes.isEmpty()) return ""
+        val hits = nodes.filter { RectF.intersects(RectF(it.first), sel) }
+        if (hits.isEmpty()) return ""
+        // nodes whose center sits inside the selection - avoids bleeding in neighbouring messages
+        val inside = hits.filter { sel.contains(it.first.centerX().toFloat(), it.first.centerY().toFloat()) }
+        val use = if (inside.isNotEmpty()) inside else hits
+        return use.sortedWith(compareBy({ it.first.top / 20 }, { it.first.left }))
+            .joinToString("\n") { it.second }.trim()
+    }
+
+    private var tessWarned = false
+
     private fun runOcr(crop: Bitmap) {
-        val img = InputImage.fromBitmap(crop, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
-        latin.process(img).addOnSuccessListener { lr ->
-            deva.process(img).addOnSuccessListener { dr ->
-                finishOcr(if (dr.text.trim().length > lr.text.trim().length) dr.text else lr.text)
-            }.addOnFailureListener { finishOcr(lr.text) }
-        }.addOnFailureListener {
-            deva.process(img).addOnSuccessListener { dr -> finishOcr(dr.text) }
-                .addOnFailureListener { Toast.makeText(this, "Read failed, try again", Toast.LENGTH_SHORT).show() }
+        Ocr.recognize(this, crop) { txt, tessOk ->
+            if (txt.isEmpty()) {
+                Toast.makeText(this, "Couldn't read text - try a tighter selection", Toast.LENGTH_SHORT).show()
+            } else if (!tessOk && !tessWarned) {
+                tessWarned = true
+                val why = Ocr.tessError ?: "still loading"
+                Toast.makeText(this, "Kannada/Hindi OCR not ready ($why)", Toast.LENGTH_LONG).show()
+            }
+            finishOcr(txt)
         }
     }
 
@@ -925,26 +1078,129 @@ class SelectActivity : Activity() {
         }
     }
 
+    /** Deterministic language detection from the Unicode script itself - ML Kit's
+     *  language-id returns "und" for short non-Latin lines, which silently
+     *  "translated" Kannada back to Kannada (the reported bug). */
+    private fun detectLangByScript(t: String): String? {
+        var kn = 0; var dev = 0; var ben = 0; var tam = 0; var tel = 0; var mal = 0
+        var guj = 0; var gur = 0; var arab = 0; var han = 0; var hang = 0; var kana = 0; var cyr = 0; var lat = 0
+        for (ch in t) when (ch.code) {
+            in 0x0C80..0x0CFF -> kn++
+            in 0x0900..0x097F -> dev++
+            in 0x0980..0x09FF -> ben++
+            in 0x0B80..0x0BFF -> tam++
+            in 0x0C00..0x0C7F -> tel++
+            in 0x0D00..0x0D7F -> mal++
+            in 0x0A80..0x0AFF -> guj++
+            in 0x0A00..0x0A7F -> gur++
+            in 0x0600..0x06FF -> arab++
+            in 0x4E00..0x9FFF -> han++
+            in 0xAC00..0xD7A3 -> hang++
+            in 0x3040..0x30FF -> kana++
+            in 0x0400..0x04FF -> cyr++
+            in 'a'.code..'z'.code, in 'A'.code..'Z'.code -> lat++
+        }
+        val m = mapOf("kn" to kn, "hi" to dev, "bn" to ben, "ta" to tam, "te" to tel,
+            "ml" to mal, "gu" to guj, "pa" to gur, "ar" to arab, "zh" to han,
+            "ko" to hang, "ja" to kana, "ru" to cyr)
+        val best = m.maxByOrNull { it.value }!!
+        if (best.value >= 2) return best.key
+        return null   // Latin or unclear: let ML Kit language-id decide
+    }
+
+    /** Download the translation packs he is most likely to need, in the background,
+     *  the moment AI Pro opens - the first real Translate then has no long wait. */
+    private fun warmTranslateModels() {
+        Thread {
+            for (pair in listOf(
+                TranslateLanguage.KANNADA to TranslateLanguage.ENGLISH,
+                TranslateLanguage.ENGLISH to TranslateLanguage.KANNADA,
+                TranslateLanguage.HINDI to TranslateLanguage.ENGLISH,
+                TranslateLanguage.ENGLISH to TranslateLanguage.HINDI)) {
+                try {
+                    val opts = TranslatorOptions.Builder().setSourceLanguage(pair.first).setTargetLanguage(pair.second).build()
+                    Translation.getClient(opts).downloadModelIfNeeded()
+                } catch (e: Exception) { }
+            }
+        }.start()
+    }
+
+    private var translateDlg: AlertDialog? = null
+    private fun translateStage(msg: String) { runOnUiThread { try { translateDlg?.setMessage(msg) } catch (e: Exception) { } } }
+
     private fun translateText() {
         val src = currentText
         if (src.isBlank()) { Toast.makeText(this, "Still reading - tap again in a second", Toast.LENGTH_SHORT).show(); return }
-        Toast.makeText(this, "Translating (first time downloads a small model)...", Toast.LENGTH_SHORT).show()
-        LanguageIdentification.getClient().identifyLanguage(src).addOnSuccessListener { lang ->
-            val fromEn = lang == "en"
-            val opts = TranslatorOptions.Builder()
-                .setSourceLanguage(if (fromEn) TranslateLanguage.ENGLISH else TranslateLanguage.HINDI)
-                .setTargetLanguage(if (fromEn) TranslateLanguage.HINDI else TranslateLanguage.ENGLISH)
-                .build()
-            val tr = Translation.getClient(opts)
-            tr.downloadModelIfNeeded().addOnSuccessListener {
-                tr.translate(src).addOnSuccessListener { out ->
-                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out))
-                    Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
-                    finish()
-                }.addOnFailureListener { Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show() }
-            }.addOnFailureListener { Toast.makeText(this, "Model download failed - check internet", Toast.LENGTH_SHORT).show() }
-        }.addOnFailureListener { Toast.makeText(this, "Language detect failed", Toast.LENGTH_SHORT).show() }
+        translateDlg = AlertDialog.Builder(this)
+            .setTitle("Translate")
+            .setMessage("Detecting language...")
+            .setCancelable(true)
+            .create()
+        translateDlg?.show()
+        val scriptLang = detectLangByScript(src)
+        val startTranslate: (String) -> Unit = { lang ->
+            val srcLang = TranslateLanguage.fromLanguageTag(lang)
+            if (srcLang == null) {
+                translateDlg?.dismiss()
+                Toast.makeText(this, "Translation not available for this language", Toast.LENGTH_SHORT).show()
+            } else {
+                val opts = TranslatorOptions.Builder()
+                    .setSourceLanguage(srcLang)
+                    .setTargetLanguage(if (srcLang == TranslateLanguage.ENGLISH) TranslateLanguage.HINDI else TranslateLanguage.ENGLISH)
+                    .build()
+                val tr = Translation.getClient(opts)
+                translateStage("Downloading the $lang translation model (one-time, can take a minute)...")
+                tr.downloadModelIfNeeded().addOnSuccessListener {
+                    translateStage("Translating...")
+                    tr.translate(src).addOnSuccessListener { out ->
+                        if (out.trim().equals(src.trim(), ignoreCase = true)) {
+                            // passthrough: model may have just landed - retry once before calling it a failure
+                            tr.translate(src).addOnSuccessListener { out2 ->
+                                translateDlg?.dismiss()
+                                if (out2.trim().equals(src.trim(), ignoreCase = true)) {
+                                    Toast.makeText(this, "Couldn't translate this text", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out2))
+                                    Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
+                                    finish()
+                                }
+                            }.addOnFailureListener {
+                                translateDlg?.dismiss()
+                                Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            translateDlg?.dismiss()
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out))
+                            Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
+                            finish()
+                        }
+                    }.addOnFailureListener {
+                        translateDlg?.dismiss()
+                        Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show()
+                    }
+                }.addOnFailureListener {
+                    translateDlg?.dismiss()
+                    Toast.makeText(this, "Model download failed - check internet (one-time ~30MB)", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        if (scriptLang != null) {
+            startTranslate(scriptLang)
+        } else {
+            LanguageIdentification.getClient().identifyLanguage(src)
+                .addOnSuccessListener { lang ->
+                    if (lang == "und") {
+                        translateDlg?.dismiss()
+                        Toast.makeText(this, "Couldn't detect the language", Toast.LENGTH_SHORT).show()
+                    } else startTranslate(lang)
+                }
+                .addOnFailureListener {
+                    translateDlg?.dismiss()
+                    Toast.makeText(this, "Language detect failed", Toast.LENGTH_SHORT).show()
+                }
+        }
     }
 
     private fun showMini(text: String) {
@@ -1112,6 +1368,31 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     fun viewToBmpPoint(x: Float, y: Float): PointF = PointF((x - ox) / scale, (y - oy) / scale)
     fun bmpToView(b: RectF): RectF = RectF(ox + b.left * scale, oy + b.top * scale, ox + b.right * scale, oy + b.bottom * scale)
 
+    // circle-to-search style text selection state
+    var textMode = false
+    private var textLinesList: List<RectF> = emptyList()
+    var ocrLines: List<RectF> = emptyList() // live drag feedback: every OCR line, view coords
+    private var textT = 1f
+    private var textAnim: ValueAnimator? = null
+    private val textHl = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; alpha = 70 }
+    private val tmpSrc = Rect()
+
+    /** Staggered left-to-right wipe-in of the per-line highlight (CTS confirm animation). */
+    fun setTextLines(lines: List<RectF>) {
+        textLinesList = lines
+        textAnim?.cancel()
+        if (lines.isEmpty()) { textT = 1f; invalidate(); return }
+        textT = 0f
+        textAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = (300 + lines.size * 60).coerceAtMost(900).toLong()
+            addUpdateListener { textT = it.animatedValue as Float; invalidate() }
+            start()
+        }
+        invalidate()
+    }
+
+    fun confirmedRect(): RectF? = confirmed
+
     fun setConfirmed(v: RectF) {
         confirmed = RectF(v); sx = -1f; resizeHandle = -1; insideDown = false
         pulseAnim?.cancel()
@@ -1168,6 +1449,11 @@ class SelectionView(context: Context, private val bmp: Bitmap,
             for (pt in dragPath) tmpPath.lineTo(pt.x, pt.y)
             canvas.drawPath(tmpPath, dragBracket)
         }
+        if (dragging && !isLasso && ocrLines.isNotEmpty()) {
+            // CTS live feedback: text lines light up the moment the drag touches them
+            val dr = normRect()
+            for (ln in ocrLines) if (RectF.intersects(ln, dr)) canvas.drawRoundRect(ln, dpF(6f), dpF(6f), textHl)
+        }
         if (dragging && isLasso && dragPath.size > 1) {
             // circle-to-search trail: pastel gradient along the drawn path
             tmpPath.reset()
@@ -1182,9 +1468,32 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         }
         val sel = confirmed ?: if (dragging && !isLasso) normRect() else null
         if (sel != null) {
-            canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
+            val textHlActive = confirmed != null && textMode && textLinesList.isNotEmpty()
+            if (!textHlActive) canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
             if (confirmed != null) {
-                if (recordMode) {
+                if (textHlActive) {
+                    // CTS text look: each line redraws crisp over the dim, then a white
+                    // translucent highlight wipes in left-to-right, staggered per line
+                    val n = textLinesList.size
+                    for ((i, ln) in textLinesList.withIndex()) {
+                        tmpSrc.set(
+                            ((ln.left - ox) / scale).toInt().coerceIn(0, bmp.width - 1),
+                            ((ln.top - oy) / scale).toInt().coerceIn(0, bmp.height - 1),
+                            ((ln.right - ox) / scale).toInt().coerceIn(1, bmp.width),
+                            ((ln.bottom - oy) / scale).toInt().coerceIn(1, bmp.height)
+                        )
+                        if (tmpSrc.right <= tmpSrc.left) tmpSrc.right = tmpSrc.left + 1
+                        if (tmpSrc.bottom <= tmpSrc.top) tmpSrc.bottom = tmpSrc.top + 1
+                        canvas.drawBitmap(bmp, tmpSrc, ln, bmpPaint)
+                        val f = (textT * (n * 0.18f + 1f) - i * 0.18f).coerceIn(0f, 1f)
+                        if (f > 0f) {
+                            canvas.save()
+                            canvas.clipRect(ln.left, ln.top, ln.left + ln.width() * f, ln.bottom)
+                            canvas.drawRoundRect(ln, dpF(6f), dpF(6f), textHl)
+                            canvas.restore()
+                        }
+                    }
+                } else if (recordMode) {
                     // Create GIF prep: plain white square-corner brackets, no gradient, no pulse
                     val arm = dpF(20f)
                     tmpPath.reset()

@@ -2,6 +2,7 @@ package com.aipro.select
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Rect
 
 object Shared {
     @Volatile var shot: Bitmap? = null
@@ -9,4 +10,5 @@ object Shared {
     @Volatile var recListener: ((String?) -> Unit)? = null   // recorder status; null = recording ended
     @Volatile var gifResult: String? = null                  // cache/img file name of the last saved GIF
     @Volatile var gifFirstFrame: Bitmap? = null              // first recorded frame, for Pin
+    @Volatile var nodeTexts: List<Pair<Rect, String>> = emptyList()  // real on-screen text dumped at capture time (all languages, no OCR)
 }
