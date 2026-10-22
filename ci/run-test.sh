@@ -85,6 +85,17 @@ adb shell uiautomator dump /sdcard/ui4.xml && adb pull /sdcard/ui4.xml $OUT/ui4.
 (grep -q "Translate" $OUT/ui4.xml && echo TAP_OPTIONS_BAR=FOUND || echo TAP_OPTIONS_BAR=MISSING) | tee $OUT/verdict-tap.txt
 adb shell pidof $PKG > $OUT/pid-after-tap.txt || echo "PROCESS DEAD after tap" >> $OUT/verdict-crash.txt
 
+# cursor-handle probe: grab the tapped word's end cursor and drag right to extend the
+# selection word-by-word; mid-drag screenshot should show the magnifier loupe
+CX1=$((W * 27 / 100)); CY1=$((H * 26 / 100)); CX2=$((W * 60 / 100))
+adb shell input swipe $CX1 $CY1 $CX2 $CY1 2200 &
+sleep 1
+adb shell screencap -p /sdcard/07-cursordrag.png
+wait
+sleep 2
+adb shell pidof $PKG > $OUT/pid-after-cursor.txt || echo "PROCESS DEAD after cursor drag" >> $OUT/verdict-crash.txt
+adb shell screencap -p /sdcard/08-cursordone.png
+
 # plus-mark regression check: press-and-HOLD without moving on empty space must show
 # no drag preview (old bug: zero-size rect + corner brackets flashed a "+" on every tap)
 HX=$((W * 50 / 100)); HY=$((H * 75 / 100))
@@ -99,5 +110,5 @@ adb shell screencap -p /sdcard/05-after.png
 adb shell pidof $PKG > $OUT/pid-final.txt || echo "PROCESS DEAD at end" >> $OUT/verdict-crash.txt
 adb logcat -d > $OUT/logcat.txt
 grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/logcat.txt > $OUT/logcat-fatal-count.txt || true
-for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after 06-taphold; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
+for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after 06-taphold 07-cursordrag 08-cursordone; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
 echo "=== VERDICTS ==="; cat $OUT/verdict-*.txt $OUT/logcat-fatal-count.txt 2>/dev/null

@@ -94,15 +94,30 @@ class SelectActivity : Activity() {
         root.setBackgroundColor(Color.TRANSPARENT)
 
         selView = SelectionView(this, b,
-            onFreePick = { vr ->
-                val tu = textUnion(vr)
-                if (tu != null && tu.width() * tu.height() >= vr.width() * vr.height() * 0.35f) confirmText(tu)
-                else confirm(snapToText(vr), false)
+            onFreePick = { vr, isLasso ->
+                if (isLasso) {
+                    // circle-to-search: keep exactly what the circle covered - no union/snap
+                    // expansion (a loose circle around one icon must not grab its neighbours)
+                    val rb = selView.viewToBmp(vr)
+                    val covered = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
+                        .filter { RectF.intersects(it, rb) }
+                        .sortedWith(compareBy({ it.top }, { it.left }))
+                    if (covered.isNotEmpty()) {
+                        selAnchorA = covered.first(); selAnchorB = covered.last()
+                        confirmText(vr, covered.map { RectF(selView.bmpToView(it)) })
+                    } else confirm(vr, false)
+                } else {
+                    val tu = textUnion(vr)
+                    if (tu != null && tu.width() * tu.height() >= vr.width() * vr.height() * 0.35f) confirmText(tu)
+                    else confirm(snapToText(vr), false)
+                }
             },
             onTap = { x, y -> tapDetect(x, y) },
             onDragStart = { hideChrome() },
             onResizeLive = { vr -> selViewRect = vr; repositionChrome() },
-            onResizeEnd = { vr -> confirmResize(vr) })
+            onResizeEnd = { vr -> confirmResize(vr) },
+            onCursorMove = { whichEnd, x, y -> cursorPreview(whichEnd, x, y) },
+            onCursorEnd = { whichEnd, x, y -> cursorConfirm(whichEnd, x, y) })
         root.addView(selView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         buildGifPill(); root.addView(gifPill)
         buildBar(); root.addView(bar)
@@ -275,6 +290,10 @@ class SelectActivity : Activity() {
         cancelAutoSelect()
         val b = bmp ?: return
         val r = selView.viewToBmp(viewRect)
+        val rb2 = RectF(r); rb2.inset(-4f, -4f)
+        val spanBoxes = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
+            .filter { RectF.intersects(it, rb2) }.sortedWith(compareBy({ it.top }, { it.left }))
+        selAnchorA = spanBoxes.firstOrNull(); selAnchorB = spanBoxes.lastOrNull()
         cropRectBmp = r
         cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
         selViewRect = viewRect
@@ -394,6 +413,45 @@ class SelectActivity : Activity() {
         union.top = union.top.coerceIn(0f, bmp!!.height - 4f)
         union.bottom = union.bottom.coerceIn(union.top + 4f, bmp!!.height.toFloat())
         return selView.bmpToView(union)
+    }
+
+    // word-by-word selection cursors (both ends) + magnifier support
+    private var selAnchorA: RectF? = null  // first box of the current text selection (bmp)
+    private var selAnchorB: RectF? = null  // last box
+
+    private fun cursorSnap(x: Float, y: Float): RectF? {
+        var best: RectF? = null
+        for (box in (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)) {
+            val hit = RectF(box); hit.inset(-6f, -6f)
+            if (hit.contains(x, y) && (best == null || box.width() * box.height() < best!!.width() * best!!.height())) best = RectF(box)
+        }
+        return best
+    }
+
+    private fun cursorSpan(whichEnd: Int, viewX: Float, viewY: Float): Pair<RectF, List<RectF>>? {
+        val p = selView.viewToBmpPoint(viewX, viewY)
+        val target = cursorSnap(p.x, p.y) ?: return null
+        val anchor = (if (whichEnd == 2) selAnchorA else selAnchorB) ?: return null
+        val span = RectF(
+            minOf(anchor.left, target.left), minOf(anchor.top, target.top),
+            maxOf(anchor.right, target.right), maxOf(anchor.bottom, target.bottom))
+        span.inset(-2f, -2f)
+        val boxes = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
+            .filter { RectF.intersects(it, span) }.sortedWith(compareBy({ it.top }, { it.left }))
+        if (boxes.isEmpty()) return null
+        return Pair(span, boxes)
+    }
+
+    private fun cursorPreview(whichEnd: Int, viewX: Float, viewY: Float) {
+        val r = cursorSpan(whichEnd, viewX, viewY) ?: return
+        selView.setTextLines(r.second.map { RectF(selView.bmpToView(it)) }, animate = false)
+    }
+
+    private fun cursorConfirm(whichEnd: Int, viewX: Float, viewY: Float) {
+        val r = cursorSpan(whichEnd, viewX, viewY) ?: return
+        selAnchorA = r.second.first(); selAnchorB = r.second.last()
+        val span = RectF(r.first); span.inset(2f, 2f)
+        confirmText(selView.bmpToView(span), r.second.map { RectF(selView.bmpToView(it)) })
     }
 
     private fun tapDetect(viewX: Float, viewY: Float) {
@@ -1254,7 +1312,9 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     private val onTap: (Float, Float) -> Unit,
                     private val onDragStart: () -> Unit,
                     private val onResizeLive: (RectF) -> Unit,
-                    private val onResizeEnd: (RectF) -> Unit) : View(context) {
+                    private val onResizeEnd: (RectF) -> Unit,
+                    private val onCursorMove: (Int, Float, Float) -> Unit = { _, _, _ -> },
+                    private val onCursorEnd: (Int, Float, Float) -> Unit = { _, _, _ -> }) : View(context) {
 
     private var scale = 1f
     private var ox = 0f
@@ -1380,9 +1440,10 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     private val tmpSrc = Rect()
 
     /** Staggered left-to-right wipe-in of the per-line highlight (CTS confirm animation). */
-    fun setTextLines(lines: List<RectF>) {
+    fun setTextLines(lines: List<RectF>, animate: Boolean = true) {
         textLinesList = lines
         textAnim?.cancel()
+        if (!animate) { textT = 1f; invalidate(); return }
         if (lines.isEmpty()) { textT = 1f; invalidate(); return }
         textT = 0f
         textAnim = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1391,6 +1452,29 @@ class SelectionView(context: Context, private val bmp: Bitmap,
             start()
         }
         invalidate()
+    }
+
+    // selection cursors + magnifier loupe (Android-style, word-by-word adjustment)
+    private var cursorMode = 0   // 0 none, 1 start, 2 end
+    private var magnifier: Magnifier? = null
+    private val cursorFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA8B8FF.toInt(); style = Paint.Style.FILL }
+    private val cursorRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = dpF(2f) }
+    private val cursorStem = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA8B8FF.toInt(); style = Paint.Style.STROKE; strokeWidth = dpF(3f); strokeCap = Paint.Cap.ROUND }
+    private fun handleCenter(pt: PointF): PointF = PointF(pt.x, pt.y + dpF(19f))
+    private fun startHandlePt(): PointF? = textLinesList.firstOrNull()?.let { PointF(it.left, it.bottom) }
+    private fun endHandlePt(): PointF? = textLinesList.lastOrNull()?.let { PointF(it.right, it.bottom) }
+    private fun cursorDown(x: Float, y: Float): Boolean {
+        if (!textMode || confirmed == null || textLinesList.isEmpty()) return false
+        val hr = dpF(30f)
+        val sh = startHandlePt()?.let { handleCenter(it) }
+        val eh = endHandlePt()?.let { handleCenter(it) }
+        val hitEnd = eh != null && kotlin.math.abs(x - eh.x) <= hr && kotlin.math.abs(y - eh.y) <= hr
+        val hitStart = sh != null && kotlin.math.abs(x - sh.x) <= hr && kotlin.math.abs(y - sh.y) <= hr
+        if (!hitStart && !hitEnd) return false
+        cursorMode = if (hitEnd) 2 else 1
+        onDragStart()   // hide bar/chip while adjusting, like Android hides the menu
+        invalidate()
+        return true
     }
 
     fun confirmedRect(): RectF? = confirmed
@@ -1498,6 +1582,14 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                             canvas.restore()
                         }
                     }
+                    // adjustment cursors at both ends of the selection
+                    val hr2 = dpF(9f)
+                    for (pt in listOfNotNull(startHandlePt(), endHandlePt())) {
+                        val hc = handleCenter(pt)
+                        canvas.drawLine(pt.x, pt.y - dpF(4f), pt.x, hc.y, cursorStem)
+                        canvas.drawCircle(hc.x, hc.y, hr2, cursorFill)
+                        canvas.drawCircle(hc.x, hc.y, hr2, cursorRing)
+                    }
                 } else if (recordMode) {
                     // Create GIF prep: plain white square-corner brackets, no gradient, no pulse
                     val arm = dpF(20f)
@@ -1527,6 +1619,11 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                 canvas.drawPath(tmpPath, dragBracket)
             }
         }
+    }
+
+    override fun onDetachedFromWindow() {
+        try { magnifier?.dismiss() } catch (_: Exception) {}
+        super.onDetachedFromWindow()
     }
 
     private fun bracket(x0: Float, y0: Float, dx: Float, dy: Float, arm: Float) {
@@ -1576,6 +1673,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         if (recordMode) return true   // frame is fixed while setting up / running a recording
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (cursorDown(e.x, e.y)) return true
                 val h = handleAt(e.x, e.y)
                 if (h >= 0) {
                     resizeHandle = h          // crop-style live resize; box + glow stay alive
@@ -1592,6 +1690,13 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                if (cursorMode != 0) {
+                    if (magnifier == null) magnifier = Magnifier.Builder(this).setInitialZoom(1.5f).build()
+                    try { magnifier?.show(e.x, e.y) } catch (_: Exception) {}
+                    onCursorMove(cursorMode, e.x, e.y)
+                    invalidate()
+                    return true
+                }
                 if (resizeHandle >= 0) {
                     applyResize(e.x, e.y)
                     onResizeLive(RectF(confirmed!!))
@@ -1622,6 +1727,13 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                if (cursorMode != 0) {
+                    val cm = cursorMode; cursorMode = 0
+                    try { magnifier?.dismiss() } catch (_: Exception) {}
+                    onCursorEnd(cm, e.x, e.y)
+                    invalidate()
+                    return true
+                }
                 if (resizeHandle >= 0) {
                     resizeHandle = -1
                     val r = RectF(confirmed!!)
@@ -1646,7 +1758,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     rr = min(ox + bmp.width * scale, rr + lp); bb = min(oy + bmp.height * scale, bb + lp)
                     val lr = RectF(l, t, rr, bb)
                     sx = -1f; ex = -1f; isLasso = false; dragPath.clear(); invalidate()
-                    if (lr.width() > 30 && lr.height() > 30) onFreePick(lr)
+                    if (lr.width() > 30 && lr.height() > 30) onFreePick(lr, true)
                     return true
                 }
                 isLasso = false; dragPath.clear()
@@ -1656,7 +1768,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     sx = -1f; ex = -1f; invalidate()
                     onTap(e.x, e.y)
                 } else if (r.width() > 30 && r.height() > 30) {
-                    onFreePick(RectF(r))
+                    onFreePick(RectF(r), false)
                 } else {
                     sx = -1f; ex = -1f; invalidate()
                 }
