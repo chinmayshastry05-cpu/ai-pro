@@ -1443,7 +1443,10 @@ class SelectionView(context: Context, private val bmp: Bitmap,
             drawGlowSet(canvas, edgeRect, edgeRadius, edgeGlow2, edgeGlow1, edgeMain)
         }
 
-        val dragging = sx >= 0 && ex >= 0
+        // draw the drag preview only once the pointer actually moved: at DOWN ex==sx,
+        // so an untainted tap would flash a zero-size rect + corner brackets (a "+" mark)
+        // before ACTION_UP routes it to tapDetect
+        val dragging = sx >= 0 && ex >= 0 && (kotlin.math.abs(ex - sx) > 16 || kotlin.math.abs(ey - sy) > 16)
         if (dragging && !isLasso && dragPath.size > 1) {
             // faint live trail under the box preview: instant feedback that the path is seen
             tmpPath.reset()
