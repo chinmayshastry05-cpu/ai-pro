@@ -85,10 +85,19 @@ adb shell uiautomator dump /sdcard/ui4.xml && adb pull /sdcard/ui4.xml $OUT/ui4.
 (grep -q "Translate" $OUT/ui4.xml && echo TAP_OPTIONS_BAR=FOUND || echo TAP_OPTIONS_BAR=MISSING) | tee $OUT/verdict-tap.txt
 adb shell pidof $PKG > $OUT/pid-after-tap.txt || echo "PROCESS DEAD after tap" >> $OUT/verdict-crash.txt
 
+# plus-mark regression check: press-and-HOLD without moving on empty space must show
+# no drag preview (old bug: zero-size rect + corner brackets flashed a "+" on every tap)
+HX=$((W * 50 / 100)); HY=$((H * 75 / 100))
+adb shell input swipe $HX $HY $HX $HY 2500 &
+sleep 2
+adb shell screencap -p /sdcard/06-taphold.png
+wait
+sleep 1
+
 sleep 10
 adb shell screencap -p /sdcard/05-after.png
 adb shell pidof $PKG > $OUT/pid-final.txt || echo "PROCESS DEAD at end" >> $OUT/verdict-crash.txt
 adb logcat -d > $OUT/logcat.txt
 grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/logcat.txt > $OUT/logcat-fatal-count.txt || true
-for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
+for f in 01-page 02-overlay 03-dragselect 04-tapword 05-after 06-taphold; do adb pull /sdcard/$f.png $OUT/ 2>/dev/null; done
 echo "=== VERDICTS ==="; cat $OUT/verdict-*.txt $OUT/logcat-fatal-count.txt 2>/dev/null
