@@ -94,6 +94,10 @@ adb shell screencap -p /sdcard/07-cursordrag.png
 # magnifier evidence: the loupe is a system-rendered overlay - capture the window
 # list + surface list mid-drag to prove show() ran even if screencap misses it
 adb shell dumpsys window windows > $OUT/dumpsys-cursordrag.txt 2>&1
+# the loupe is a SurfaceControl layer named "magnifier surface" (not a Window) -
+# SurfaceFlinger layer list is the layer that proves show() ran
+adb shell dumpsys SurfaceFlinger > $OUT/sf-cursordrag.txt 2>&1
+grep -ci "magnifier surface" $OUT/sf-cursordrag.txt > $OUT/magnifier-layer-count.txt || echo 0 > $OUT/magnifier-layer-count.txt
 adb shell uiautomator dump /sdcard/ui-magnifier.xml && adb pull /sdcard/ui-magnifier.xml $OUT/ui-magnifier.xml 2>/dev/null
 sleep 0.4
 adb shell screencap -p /sdcard/07b-cursordrag.png
