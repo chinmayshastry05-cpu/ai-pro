@@ -98,7 +98,7 @@ class SelectActivity : Activity() {
                 if (isLasso) {
                     // circle-to-search: keep exactly what the circle covered - no union/snap
                     // expansion (a loose circle around one icon must not grab its neighbours)
-                    val rb = selView.viewToBmp(vr)
+                    val rb = RectF(selView.viewToBmp(vr))
                     val covered = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
                         .filter { RectF.intersects(it, rb) }
                         .sortedWith(compareBy({ it.top }, { it.left }))
@@ -1308,7 +1308,7 @@ class SelectActivity : Activity() {
 }
 
 class SelectionView(context: Context, private val bmp: Bitmap,
-                    private val onFreePick: (RectF) -> Unit,
+                    private val onFreePick: (RectF, Boolean) -> Unit,
                     private val onTap: (Float, Float) -> Unit,
                     private val onDragStart: () -> Unit,
                     private val onResizeLive: (RectF) -> Unit,
@@ -1388,6 +1388,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     override fun onDetachedFromWindow() {
         anim?.cancel()
         pulseAnim?.cancel()
+        try { magnifier?.dismiss() } catch (_: Exception) {}
         super.onDetachedFromWindow()
     }
 
@@ -1619,11 +1620,6 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                 canvas.drawPath(tmpPath, dragBracket)
             }
         }
-    }
-
-    override fun onDetachedFromWindow() {
-        try { magnifier?.dismiss() } catch (_: Exception) {}
-        super.onDetachedFromWindow()
     }
 
     private fun bracket(x0: Float, y0: Float, dx: Float, dy: Float, arm: Float) {
