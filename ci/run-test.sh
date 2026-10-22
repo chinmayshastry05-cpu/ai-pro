@@ -50,6 +50,7 @@ adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpa
 for i in 1 2 3 4 5 6; do
   tap_text "Wait" && echo "dismissed ANR dialog"
   tap_text "Use without an account" && echo "skipped chrome first-run"
+  tap_text "No thanks" && echo "dismissed chrome notification dialog"
   if page_has_text; then echo PAGE_LOADED | tee $OUT/verdict-page.txt; break; fi
   sleep 5
 done
@@ -59,7 +60,7 @@ adb shell screencap -p /sdcard/01-page.png
 adb logcat -c
 adb shell am start -n $PKG/.MainActivity
 sleep 12
-for i in 1 2 3; do tap_text "Wait" && echo "dismissed ANR dialog"; done
+for i in 1 2 3; do tap_text "Wait" && echo "dismissed ANR dialog"; tap_text "No thanks" && echo "dismissed chrome notification dialog"; done
 adb shell dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" > $OUT/focus.txt
 adb shell screencap -p /sdcard/02-overlay.png
 
@@ -75,7 +76,7 @@ adb shell input keyevent 4
 sleep 2
 adb shell am start -n $PKG/.MainActivity
 sleep 12
-for i in 1 2 3; do tap_text "Wait" && echo "dismissed ANR dialog"; done
+for i in 1 2 3; do tap_text "Wait" && echo "dismissed ANR dialog"; tap_text "No thanks" && echo "dismissed chrome notification dialog"; done
 adb shell input tap $TX $SWY
 sleep 4
 adb shell screencap -p /sdcard/04-tapword.png
