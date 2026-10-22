@@ -345,7 +345,7 @@ class SelectActivity : Activity() {
         val parent = p.parent as View
         val pw = p.width; val ph = p.height
         if (pw == 0 || ph == 0) { p.post { repositionPill(p, r) }; return }
-        val x = (r.centerX() - pw / 2f).coerceIn(dp(10f).toFloat(), parent.width - pw - dp(10f).toFloat())
+        val x = (r.centerX() - pw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - pw - dp(10f).toFloat()))
         var y = r.top - ph - dp(10f)
         if (y < dp(44f)) y = (r.top + dp(8f)).coerceAtMost((parent.height - ph - dp(10f)).toFloat())
         p.translationX = x; p.translationY = y
@@ -355,7 +355,7 @@ class SelectActivity : Activity() {
         val parent = v.parent as View
         val bw = v.width; val bh = v.height
         if (bw == 0 || bh == 0) { v.post { repositionBar(v, r) }; return }
-        val x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), parent.width - bw - dp(10f).toFloat())
+        val x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - bw - dp(10f).toFloat()))
         var y = r.bottom + dp(10f)
         if (y + bh > parent.height - dp(16f)) y = r.top - bh - dp(56f)
         v.translationX = x; v.translationY = y
@@ -986,6 +986,7 @@ class SelectActivity : Activity() {
         div.setBackgroundColor(Color.parseColor("#44FFFFFF"))
         textChip.addView(div, LinearLayout.LayoutParams(dp(1f), dp(20f)))
         textChip.addView(chipBtn("Translate") { translateText() })
+        textChip.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
         textChip.visibility = View.GONE
     }
 
@@ -995,7 +996,8 @@ class SelectActivity : Activity() {
         textChip.post {
             val parent = textChip.parent as View
             val cw = textChip.width; val ch = textChip.height
-            val x = (r.centerX() - cw / 2f).coerceIn(dp(10f).toFloat(), parent.width - cw - dp(10f).toFloat())
+            if (cw == 0 || ch == 0 || parent.width == 0) { textChip.post { showTextChip(r) }; return@post }
+            val x = (r.centerX() - cw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - cw - dp(10f).toFloat()))
             var y = r.top - ch - dp(10f)
             if (y < dp(44f)) y = (r.bottom + dp(10f)).coerceAtMost((parent.height - ch - dp(10f)).toFloat())
             textChip.translationX = x
