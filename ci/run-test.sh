@@ -47,12 +47,13 @@ echo "SCREEN=$SIZE" | tee $OUT/screen.txt
 SWY=$((H * 19 / 100)); X1=$((W * 8 / 100)); X2=$((W * 92 / 100)); TX=$((W * 30 / 100)); SY1=$((H * 17 / 100)); SY2=$((H * 27 / 100))
 
 adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html"
-for i in 1 2 3 4 5 6; do
+for i in 1 2 3 4 5 6 7 8 9 10; do
   tap_text "Wait" && echo "dismissed ANR dialog"
   tap_text "Use without an account" && echo "skipped chrome first-run"
   tap_text "No thanks" && echo "dismissed chrome notification dialog"
   if page_has_text; then echo PAGE_LOADED | tee $OUT/verdict-page.txt; break; fi
-  sleep 5
+  adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html" >/dev/null 2>&1   # launcher ANR can swallow the first intent; keep retrying
+  sleep 6
 done
 grep -q PAGE_LOADED $OUT/verdict-page.txt 2>/dev/null || echo PAGE_NOT_LOADED | tee $OUT/verdict-page.txt
 adb shell screencap -p /sdcard/01-page.png
