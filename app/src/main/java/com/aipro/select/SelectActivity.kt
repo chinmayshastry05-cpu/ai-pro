@@ -770,7 +770,7 @@ class SelectActivity : Activity() {
             val screenH = (showBar.parent as View).height
             val bw = showBar.width; val bh = showBar.height
             var x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), screenW - bw - dp(10f).toFloat())
-            var y = r.bottom + dp(if (v === textBar) 40f else 10f)  // text bar must clear the selection cursors (handles hang ~28dp below)
+            var y = r.bottom + dp(if (showBar === textBar) 40f else 10f)  // text bar must clear the selection cursors (handles hang ~28dp below)
             if (y + bh > screenH - dp(16f)) y = r.top - bh - dp(56f) // flip above, under the pill
             showBar.translationX = x; showBar.translationY = y
             showBar.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(220).setStartDelay(40).setInterpolator(OvershootInterpolator(1.6f)).start()
