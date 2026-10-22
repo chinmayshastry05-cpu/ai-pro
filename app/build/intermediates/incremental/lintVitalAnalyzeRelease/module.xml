@@ -1,0 +1,19 @@
+<lint-module
+    format="1"
+    dir="/tmp/ai-pro-ci/app"
+    name=":app"
+    type="APP"
+    maven="AI Pro:app:"
+    gradle="7.4.2"
+    buildFolder="build"
+    bootClassPath="/tmp/android-sdk/platforms/android-33/android.jar:/tmp/android-sdk/build-tools/30.0.3/core-lambda-stubs.jar"
+    javaSourceLevel="11"
+    compileTarget="android-33"
+    neverShrinking="true">
+  <lintOptions
+      abortOnError="true"
+      absolutePaths="true"
+      checkReleaseBuilds="true"
+      explainIssues="true"/>
+  <variant name="release"/>
+</lint-module>
