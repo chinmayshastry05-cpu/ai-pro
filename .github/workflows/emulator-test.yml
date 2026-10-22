@@ -8,6 +8,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
     steps:
       - uses: actions/checkout@v4
       - name: set up JDK 17
@@ -46,6 +48,7 @@ jobs:
       - name: build release APK
         run: gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process
       - name: sign release APK
+        if: ${{ env.KS_B64 != '' }}
         env:
           KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -59,6 +62,7 @@ jobs:
           "$BT/apksigner" verify --print-certs /tmp/AIPro-signed.apk
           sha256sum /tmp/AIPro-signed.apk
       - name: upload signed APK
+        if: ${{ env.KS_B64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: signed-release
