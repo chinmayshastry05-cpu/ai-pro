@@ -108,7 +108,7 @@ page; overlay; tapw 0 1; shot rg-c1; check RG_C1_TAP_WORD "bravo" "$(tapcopy)"
 fi
 if want C2; then
 # C2 end handle drag extends the range alpha..charlie
-page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $XC $YM; sleep .5; shot rg-c2-mid; mev UP $XC $YM; sleep 3; shot rg-c2
+page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $((XR-6)) $YM; sleep .5; shot rg-c2-mid; mev UP $((XR-6)) $YM; sleep 3; shot rg-c2
 check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
 fi
 if want C3; then
