@@ -13,6 +13,11 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
+      - name: overlay Muse v4 SelectActivity (hash checked)
+        run: |
+          F=$(find ci -name '*SelectActivity-v4.kt' | head -1)
+          echo "d374db171b04e58a84cb256d5fee2c5a0ac2872a9ee8172024e7f7292d39cccc  $F" | sha256sum -c -
+          cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
       - name: add test-only logcat counters (test branch only)
         run: bash $(ls ci/*obs-inject.sh)
       - name: build debug APK
