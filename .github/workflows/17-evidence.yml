@@ -101,16 +101,19 @@ jobs:
         run: |
           ls -R ci/out | head -50
           python3 - <<'PY'
-          import glob,base64,io
+          import base64,io
           from PIL import Image
-          files=sorted(glob.glob('ci/out/**/*.png',recursive=True))+sorted(glob.glob('out/**/*.png',recursive=True))
-          print('FILES',files)
-          for f in files:
-              im=Image.open(f).convert('RGB'); w,h=im.size; im=im.resize((540,int(h*540/w)))
-              b=io.BytesIO(); im.save(b,'JPEG',quality=55)
-              print('@@IMG',f,len(b.getvalue()))
-              print('@@B64',base64.b64encode(b.getvalue()).decode())
-              print('@@END')
+          want=['out/assist.png','out/main.png','ci/out/rg-c1.png','ci/out/rg-c11.png','ci/out/rg-c12-right.png','ci/out/rg-c6-after.png']
+          for f in want:
+              try: im=Image.open(f).convert('RGB')
+              except Exception as e: print('MISSING',f); continue
+              w,h=im.size; im=im.resize((300,int(h*300/w)))
+              b=io.BytesIO(); im.save(b,'JPEG',quality=45)
+              s=base64.b64encode(b.getvalue()).decode()
+              n=0
+              for i in range(0,len(s),110):
+                  print('@@L',f.split('/')[-1],n,s[i:i+110]); n+=1
+              print('@@DONE',f.split('/')[-1],n)
           PY
       - uses: actions/upload-artifact@v4
         if: always()
