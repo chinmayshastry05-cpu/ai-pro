@@ -4,6 +4,34 @@ on:
     branches: [ 'test/**' ]
   workflow_dispatch:
 jobs:
+  clean-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: overlay Muse v8 SelectActivity (hash checked), no test logging
+        run: |
+          F=$(find ci -name '*SelectActivity-v8.kt' | head -1)
+          echo "9bfd2bdaac352cb26900755eb2085479589a88a2ef605fa748e6755474e3e62c  $F" | sha256sum -c -
+          cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
+          sed -i 's/versionName "0.8.8"/versionName "0.8.9-test2-unverified"/; s/versionCode 31/versionCode 32/' app/build.gradle
+          test "$(grep -c RGOBS app/src/main/java/com/aipro/select/SelectActivity.kt)" = "0"
+      - name: build debug APK
+        run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+      - name: record hashes
+        run: |
+          mkdir -p out; cp app/build/outputs/apk/debug/app-debug.apk out/AI-Pro-v0.8.9-test2-unverified.apk
+          sha256sum out/*.apk | tee out/sha256.txt
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | tail -1)/apksigner verify --print-certs out/*.apk | tee out/cert.txt || true
+          sha256sum app/src/main/java/com/aipro/select/SelectActivity.kt | tee -a out/sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clean-candidate
+          path: out/
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45
