@@ -24,6 +24,7 @@ PY
 ); [ -n "$B" ] && adb shell input tap $B && sleep 1; done; done; }
 
 adb wait-for-device; adb shell input keyevent 82
+adb shell settings put global hide_error_dialogs 1
 for s in window_animation_scale transition_animation_scale animator_duration_scale; do adb shell settings put global $s 0; done
 adb install -r app/build/outputs/apk/debug/app-debug.apk || { verdict "RG_INSTALL=FAIL"; exit 1; }
 adb shell settings put secure enabled_accessibility_services $PKG/$PKG.CaptureService
@@ -33,7 +34,7 @@ SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*
 N=0; INVALID=0; OCR0=0
 ocrn() { adb logcat -d -s RGOBS:D 2>/dev/null | grep -c "ocr done"; }
 num() { [[ "$1" =~ ^[0-9]+$ ]]; }
-page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1
+page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dismiss; adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
   for k in 1 2 3 4 5 6; do adb shell am start -a android.intent.action.VIEW -d "$u?c=$N" >/dev/null; sleep 8; dismiss; ui
     if grep -q "$mark" /tmp/u.xml; then break; fi; echo "page retry $k ($u)" >> $OUT/rg-notes.txt; done
   cp /tmp/u.xml /tmp/page.xml
