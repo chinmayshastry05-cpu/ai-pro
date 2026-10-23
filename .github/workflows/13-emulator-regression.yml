@@ -22,7 +22,7 @@ jobs:
           case "${{ matrix.ver }}" in
             v7) H=9b6b9a3ae035b0fce8fb5a1bd9081bef1f5a481b3110057f001d1cbbfcf61337;;
             v8) H=9bfd2bdaac352cb26900755eb2085479589a88a2ef605fa748e6755474e3e62c;;
-            v9) H=e7c3942ddf976b66cac0b438feada3020338d84f0602f33ad874bcc175ec1475;;
+            v9) H=e7c3942ddf976b66cac0b438feada3020338d84f0452f33ad874bcc175ec1475;;
           esac
           F=$(find ci -name '*SelectActivity-${{ matrix.ver }}.kt' | head -1)
           echo "$H  $F" | sha256sum -c -
