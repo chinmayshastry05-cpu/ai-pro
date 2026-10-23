@@ -13,10 +13,10 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
-      - name: overlay Muse v5 SelectActivity (hash checked)
+      - name: overlay Muse v6 SelectActivity (hash checked)
         run: |
-          F=$(find ci -name '*SelectActivity-v5.kt' | head -1)
-          echo "2f4a2add6ececbdae718d35cc621ba69343abd4b31641355163f886cbb248579  $F" | sha256sum -c -
+          F=$(find ci -name '*SelectActivity-v6.kt' | head -1)
+          echo "6d2129764da346337dba8bc38fbde848986505d3babe9d99c391439534419fd0  $F" | sha256sum -c -
           cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
       - name: add test-only logcat counters (test branch only)
         run: bash $(ls ci/*obs-inject.sh)
