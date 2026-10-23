@@ -13,10 +13,10 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
-      - name: overlay Muse v5 SelectActivity (hash checked)
+      - name: overlay Muse v7 SelectActivity (hash checked)
         run: |
-          F=$(find ci -name '*SelectActivity-v5.kt' | head -1)
-          echo "2f4a2add6ececbdae718d35cc621ba69343abd4b31641355163f886cbb248579  $F" | sha256sum -c -
+          F=$(find ci -name '*SelectActivity-v7.kt' | head -1)
+          echo "9b6b9a3ae035b0fce8fb5a1bd9081bef1f5a481b3110057f001d1cbbfcf61337  $F" | sha256sum -c -
           cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
       - name: add test-only logcat counters (test branch only)
         run: bash $(ls ci/*obs-inject.sh)
@@ -41,7 +41,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
           script: bash $(ls ci/*run-regression.sh)
         env:
-          RG_CASES: ""
+          RG_CASES: "C0 C3 C4 C5 C6 C7"
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
