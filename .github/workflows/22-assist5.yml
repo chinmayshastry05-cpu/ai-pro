@@ -1,0 +1,178 @@
+name: assist5
+on:
+  push:
+    branches: [ 'beta/assist5' ]
+    paths: [ '.github/workflows/22-assist5.yml' ]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  evidence:
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [ baseline-0.8.9, secure-arm64 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: test/muse-v7 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: secure-apks
+          path: dl
+          run-id: 40023694856
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: place the APK under test
+        run: |
+          set -e
+          mkdir -p app/build/outputs/apk/debug apk
+          if [ "${{ matrix.which }}" = "baseline-0.8.9" ]; then
+            curl -sL -o apk/test.apk https://github.com/${{ github.repository }}/releases/download/v0.8.9/AI-Pro-v0.8.9.apk
+            echo "e2c975c181e914d1c0fa15145809467ff5163e11d8f54a1d13288edb74360d6b  apk/test.apk" | sha256sum -c -
+          else
+            cp dl/AI-Pro-v0.8.9-hardened-beta1.apk apk/test.apk
+          fi
+          cp apk/test.apk app/build/outputs/apk/debug/app-debug.apk
+          sha256sum apk/test.apk
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          "$BT/aapt2" dump badging apk/test.apk | grep -E "application-label:|^package"
+          "$BT/aapt2" dump badging apk/test.apk | grep -m1 "application-label:" | sed "s/application-label:'\(.*\)'/\1/" > /tmp/label.txt
+          cat /tmp/label.txt
+      - run: python3 -m pip install --user pillow
+      - run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
+      - name: write the native settings script
+        run: |
+          mkdir -p out
+          cat > ui.py <<'PY'
+          import subprocess,sys,re,xml.etree.ElementTree as ET,time
+          def sh(c): return subprocess.run(c,shell=True,capture_output=True,text=True).stdout
+          def dump():
+              sh('adb shell uiautomator dump /sdcard/ui.xml'); x=sh('adb shell cat /sdcard/ui.xml')
+              try: r=ET.fromstring(x[x.index('<'):])
+              except Exception: return []
+              out=[]
+              for n in r.iter('node'):
+                  t=(n.get('text') or n.get('content-desc') or '').strip()
+                  m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.get('bounds') or '')
+                  if t and m:
+                      a=list(map(int,m.groups())); out.append((t,(a[0]+a[2])//2,(a[1]+a[3])//2))
+              return out
+          def show(tag):
+              print('--- UI texts:',tag,[t for t,_,_ in dump()])
+          def tap(*names):
+              for _ in range(4):
+                  d=dump()
+                  for n in names:
+                      for t,x,y in d:
+                          if n.lower()==t.lower():
+                              print('TAP exact',repr(t)); sh(f'adb shell input tap {x} {y}'); return True
+                  for n in names:
+                      for t,x,y in d:
+                          if n.lower() in t.lower():
+                              print('TAP contains',repr(t)); sh(f'adb shell input tap {x} {y}'); return True
+                  sh('adb shell input swipe 500 1500 500 600 300'); time.sleep(1)
+              print('NOT FOUND',names); return False
+          if __name__=='__main__':
+              a=sys.argv[1]
+              if a=='show': show(sys.argv[2])
+              if a=='tap': sys.exit(0 if tap(*sys.argv[2:]) else 1)
+          PY
+          cat > ci-assist2.sh <<'SH'
+          #!/bin/bash
+          mkdir -p out; P=com.aipro.select; LABEL="$(cat /tmp/label.txt)"
+          adb wait-for-device; sleep 10
+          adb install -r -t apk/test.apk 2>&1 | tee /tmp/inst.txt
+          grep -q Success /tmp/inst.txt || { echo "PREFLIGHT FAIL: install did not succeed"; exit 1; }
+          adb shell dumpsys package $P > /tmp/pkg.txt
+          grep -E "versionCode=|versionName=|flags=|signatures|Signatures|signing" /tmp/pkg.txt | head -8
+          grep -q "versionCode=" /tmp/pkg.txt || { echo "PREFLIGHT FAIL: package not present"; exit 1; }
+          echo "--- permission declared on services in installed package:"; grep -n -i -E "AssistService|AssistSessionService" /tmp/pkg.txt | head -6
+          adb shell cmd package query-services --brief -a android.service.voice.VoiceInteractionService | tee /tmp/qs.txt
+          grep -q "com.aipro.select" /tmp/qs.txt && echo "PREFLIGHT: AI Pro VoiceInteractionService resolved" || echo "PREFLIGHT NOTE: AI Pro VoiceInteractionService NOT resolved by PackageManager"
+          adb logcat -c
+          adb shell input keyevent KEYCODE_HOME; sleep 2
+          echo "=== NATIVE SETTINGS: default digital assistant app"
+          adb shell am start -a android.settings.VOICE_INPUT_SETTINGS; sleep 5
+          adb shell screencap -p /sdcard/n1.png; adb pull /sdcard/n1.png out/n1-settings.png >/dev/null
+          python3 ui.py show voice-input-settings
+          python3 ui.py tap "Default digital assistant app"; sleep 4
+          adb shell screencap -p /sdcard/n2.png; adb pull /sdcard/n2.png out/n2-picker.png >/dev/null
+          python3 ui.py show picker
+          echo "=== DIAG package registration"
+          adb shell dumpsys package $P | grep -n -i -E "AssistService|AssistSessionService|AssistRecognition|BIND_VOICE|BIND_RECOG|supportsAssist" | head -30
+          echo "--- query-services VIS"; adb shell cmd package query-services --brief -a android.service.voice.VoiceInteractionService
+          echo "--- query-services Recognition"; adb shell cmd package query-services --brief -a android.speech.RecognitionService
+          echo "--- logcat voice/settings lines"; adb logcat -d | grep -i -E "VoiceInteractionServiceInfo|VoiceInputHelper|VoiceInteractionManager|DefaultAssist|RoleManager|RoleControllerService" | tail -30
+          echo "app label under test: $LABEL"
+          if python3 ui.py tap "$LABEL"; then sleep 3; adb shell screencap -p /sdcard/n3.png; adb pull /sdcard/n3.png out/n3-confirm.png >/dev/null; python3 ui.py show confirm; python3 ui.py tap "OK" "Set" "Yes" "Allow"; sleep 3; fi
+          adb shell screencap -p /sdcard/n4.png; adb pull /sdcard/n4.png out/n4-after.png >/dev/null
+          python3 ui.py show after-select
+          echo -n "enabled_accessibility_services="; adb shell settings get secure enabled_accessibility_services
+          echo "--- settings secure"; for k in assistant voice_interaction_service voice_recognition_service; do echo -n "$k="; adb shell settings get secure $k; done
+          echo "--- role holders"; adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
+          echo "--- role holders after native attempt"; adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT | tee /tmp/rh.txt
+          if ! grep -q com.aipro.select /tmp/rh.txt; then
+            echo "=== DIAG fallback (NOT the native UI): role add via cmd, to test whether the system accepts the service"
+            adb shell cmd role add-role-holder --user 0 android.app.role.ASSISTANT $P 0; sleep 4
+            adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
+            for k in assistant voice_interaction_service; do echo -n "$k="; adb shell settings get secure $k; done
+            adb logcat -d | grep -i -E "VoiceInteractionServiceInfo|VoiceInteractionManager" | tail -15
+          fi
+          echo "--- dumpsys voiceinteraction (head)"; adb shell dumpsys voiceinteraction | head -40
+          echo "=== INVOKE ASSISTANT (KEYCODE_ASSIST)"
+          adb shell input keyevent KEYCODE_HOME; sleep 2
+          adb shell input keyevent KEYCODE_ASSIST; sleep 8
+          adb shell screencap -p /sdcard/n5.png; adb pull /sdcard/n5.png out/n5-assist-invoked.png >/dev/null
+          python3 ui.py show assist-invoked
+          adb shell dumpsys activity activities | grep -E "topResumedActivity|mResumedActivity" | head -3
+          echo "--- logcat FATAL/Security (14 lines context)"
+          adb logcat -d | grep -E -A14 "FATAL EXCEPTION|SecurityException" | head -100
+          echo "--- app process"; adb shell pidof $P
+          SH
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: smoke then native assistant selection on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          script: bash -c "mkdir -p out; bash ci-assist2.sh 2>&1 | tee out/assist-log.txt"
+        env:
+          RG_CASES: "C1 C2 C6 C10 C11 C12"
+      - name: print verdicts and logs
+        if: always()
+        run: |
+          echo "=== RG VERDICTS"; cat ci/out/rg-verdicts.txt || true
+          echo "=== ASSIST LOG"; cat out/assist-log.txt || true
+      - name: print screenshots as chunked base64 jpeg
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import base64,io,glob
+          from PIL import Image
+          files=sorted(glob.glob('ci/out/**/*.png',recursive=True))+sorted(glob.glob('out/**/*.png',recursive=True))
+          print('FILES',files)
+          for f in files:
+              im=Image.open(f).convert('RGB'); w,h=im.size; im=im.resize((320,int(h*320/w)))
+              b=io.BytesIO(); im.save(b,'JPEG',quality=45)
+              s=base64.b64encode(b.getvalue()).decode(); n=0
+              for i in range(0,len(s),160):
+                  print('@@L',f.split('/')[-1],n,s[i:i+160]); n+=1
+              print('@@DONE',f.split('/')[-1],n)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.which }}
+          path: |
+            ci/out/
+            out/
