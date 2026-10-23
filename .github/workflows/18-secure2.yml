@@ -15,7 +15,7 @@ jobs:
       - name: require signing secrets
         run: test -n "$KS_B64" || { echo "no keystore secret"; exit 1; }
       - uses: actions/checkout@v4
-        with: { ref: main, fetch-depth: 0, path: src }
+        with: { ref: 150285ca42d40d9dbe046aa76033def21e34d142, fetch-depth: 0, path: src }
       - name: confirm main is the accepted 0.8.9 source
         run: test "$(git -C src rev-parse HEAD)" = "150285ca42d40d9dbe046aa76033def21e34d142"
       - uses: actions/setup-java@v4
