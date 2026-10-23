@@ -1,0 +1,115 @@
+name: publish-hardened-beta1
+on:
+  push:
+    branches: [ 'beta/pub' ]
+    paths: [ '.github/workflows/23-publish.yml' ]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ARM_SHA: 9fee4a30c50858f0f8259b9a86b4e0348fd635f2bed0b90f176e9ca6db59cd59
+      V7A_SHA: ca7e5f65ceb33c4ea698863092ac48f93b9bbce8470a2b1e50c2c5ecbf10efb6
+      CERT: ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: 150285ca42d40d9dbe046aa76033def21e34d142, fetch-depth: 0 }
+      - name: clean source snapshots (the build branches also hold build outputs)
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch -q origin beta/final-src beta/final-v7a-src
+          test "$(git rev-parse HEAD)" = "150285ca42d40d9dbe046aa76033def21e34d142"
+          git checkout -q -b beta/pub-src
+          git diff 150285ca42d40d9dbe046aa76033def21e34d142 origin/beta/final-src -- . ':(exclude)app/build' > /tmp/arm.patch
+          git apply /tmp/arm.patch
+          git status --short
+          git add -A
+          git commit -q -m "0.8.9 hardened beta 1 (arm64) source: release build, window-change events only, 24h capture cache cleanup"
+          git diff --stat 150285ca42d40d9dbe046aa76033def21e34d142 HEAD
+          git diff --exit-code origin/beta/final-src HEAD -- . ':(exclude)app/build' && echo ARM_SOURCE_EQUALS_BUILT_SOURCE
+          git push origin beta/pub-src
+          git checkout -q -b beta/pub-v7a-src
+          git diff origin/beta/final-src origin/beta/final-v7a-src -- . ':(exclude)app/build' > /tmp/v7a.patch
+          git apply /tmp/v7a.patch
+          git add -A
+          git commit -q -m "0.8.9 hardened beta 1 (32-bit) source: ABI filter and version only"
+          git diff --exit-code origin/beta/final-v7a-src HEAD -- . ':(exclude)app/build' && echo V7A_SOURCE_EQUALS_BUILT_SOURCE
+          git diff --stat beta/pub-src HEAD
+          git push origin beta/pub-v7a-src
+      - name: snapshot v0.8.9 release before
+        run: |
+          set -e
+          gh release view v0.8.9 --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,isDraft,publishedAt,assets,url > /tmp/v089-before.json
+          cat /tmp/v089-before.json
+          git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/tags/v0.8.9 'refs/tags/v0.8.9^{}' refs/tags/v0.8.9-v7a-beta1 'refs/tags/v0.8.9-v7a-beta1^{}' refs/heads/beta/pub-src refs/heads/beta/pub-v7a-src | tee /tmp/refs-before.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: secure-apks
+          path: dl
+          run-id: 40023694856
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: verify exact artifacts before publishing
+        run: |
+          set -e
+          ls -l dl
+          test "$(sha256sum dl/AI-Pro-v0.8.9-hardened-beta1.apk | cut -d' ' -f1)" = "$ARM_SHA"
+          test "$(sha256sum dl/AI-Pro-v0.8.9-hardened-v7a-beta1.apk | cut -d' ' -f1)" = "$V7A_SHA"
+          test "$(ls dl | wc -l)" = "2"
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          for f in dl/*.apk; do "$BT/apksigner" verify --print-certs $f | grep -q "$CERT"; done
+          echo ARTIFACTS_VERIFIED
+      - name: publish separate prerelease
+        run: |
+          set -e
+          ARMSRC=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/beta/pub-src | cut -f1)
+          V7SRC=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/beta/pub-v7a-src | cut -f1)
+          echo "arm64 source $ARMSRC; v7a source $V7SRC"
+          cat > /tmp/notes.md <<MSG
+          AI Pro 0.8.9 hardened beta 1 (two builds, separate prerelease; v0.8.9 and the 32-bit beta v0.8.9-v7a-beta1 are unchanged).
+
+          Files:
+          - AI-Pro-v0.8.9-hardened-beta1.apk - arm64-v8a (64-bit), versionCode 35, sha256 $ARM_SHA
+          - AI-Pro-v0.8.9-hardened-v7a-beta1.apk - armeabi-v7a (32-bit ARM), versionCode 36, sha256 $V7A_SHA
+
+          Both are signed with the same release key as v0.8.9 (cert sha256 $CERT), so they update over v0.8.9 or the 32-bit beta of the same key. They are built from the accepted 0.8.9 source (commit 150285ca) plus these changes only:
+          1. Release build that is not debuggable (v0.8.9 shipped debuggable).
+          2. The accessibility service listens to window-change events only, not all event types. It can still read the screen and take screenshots when you enable it.
+          3. Cached crop/GIF captures older than 24 hours are deleted when the image provider starts. This is opportunistic cleanup, not a guaranteed 24-hour retention limit.
+          The 32-bit build differs from the 64-bit one only in ABI filter and version.
+
+          Source: arm64 build $ARMSRC (branch beta/pub-src); 32-bit build $V7SRC (branch beta/pub-v7a-src).
+
+          What this does not change:
+          - These are hardened builds, not a claim that the app is secure. The assistant behaviour and permissions (including microphone) are as in v0.8.9.
+          - Android's restricted-settings protection for sideloaded apps still applies. The accessibility switch can be greyed out until you allow restricted settings for the app in App info. Google explains this here: https://support.google.com/android/answer/12623953 . An accessibility service can read the screen and act in apps, so only turn it on for an app you trust.
+          - The 32-bit build is checked statically in CI only (32-bit ARM libraries, signature). It was not run on a 32-bit phone or emulator, and whether a particular phone is 32-bit is not confirmed.
+          - Known limits already present in v0.8.9: selecting part of a word with the end handle can return a partial word (for example "golf hot" instead of "golf hotel"), and the edge magnifier is clipped at the screen edge. Compared against v0.8.9 on the same test page, the 64-bit hardened build behaved the same.
+          - Tested on an x86_64 Android 14 emulator with the 64-bit build against a synthetic test page; not on a physical phone.
+          MSG
+          sed -i 's/^          //' /tmp/notes.md
+          gh release create v0.8.9-hardened-beta1 dl/AI-Pro-v0.8.9-hardened-beta1.apk dl/AI-Pro-v0.8.9-hardened-v7a-beta1.apk --repo "$GITHUB_REPOSITORY" --target "$ARMSRC" --prerelease --title "AI Pro 0.8.9 hardened beta 1" --notes-file /tmp/notes.md
+          gh release view v0.8.9-hardened-beta1 --repo "$GITHUB_REPOSITORY" --json url,isPrerelease,tagName,targetCommitish -q '.url, .isPrerelease, .tagName, .targetCommitish'
+      - name: re-download published assets and re-hash
+        run: |
+          set -e
+          mkdir -p pub && cd pub
+          gh release download v0.8.9-hardened-beta1 --repo "$GITHUB_REPOSITORY"
+          sha256sum *
+          test "$(sha256sum AI-Pro-v0.8.9-hardened-beta1.apk | cut -d' ' -f1)" = "$ARM_SHA"
+          test "$(sha256sum AI-Pro-v0.8.9-hardened-v7a-beta1.apk | cut -d' ' -f1)" = "$V7A_SHA"
+          echo PUBLISHED_ASSETS_MATCH
+      - name: verify earlier releases untouched
+        run: |
+          set -e
+          gh release view v0.8.9 --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease,isDraft,publishedAt,assets,url > /tmp/v089-after.json
+          cmp /tmp/v089-before.json /tmp/v089-after.json && echo V089_RELEASE_UNCHANGED
+          git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/tags/v0.8.9 'refs/tags/v0.8.9^{}' refs/tags/v0.8.9-v7a-beta1 'refs/tags/v0.8.9-v7a-beta1^{}' refs/heads/beta/pub-src refs/heads/beta/pub-v7a-src > /tmp/refs-after.txt
+          cmp /tmp/refs-before.txt /tmp/refs-after.txt && echo TAGS_AND_SOURCE_BRANCHES_UNCHANGED
+          gh release view v0.8.9-v7a-beta1 --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[]|"\(.name) \(.digest)"'
+          gh release view v0.8.9 --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[]|"\(.name) \(.digest)"'
