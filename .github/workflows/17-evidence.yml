@@ -60,7 +60,8 @@ jobs:
           adb shell am start -n $P/.MainActivity; sleep 6
           adb shell screencap -p /sdcard/main.png; adb pull /sdcard/main.png out/main.png
           echo "--- logcat lines mentioning fatal/security/aipro"
-          adb logcat -d | grep -E "FATAL EXCEPTION|SecurityException|AndroidRuntime|aipro" | tail -40
+          adb logcat -d | grep -E -A14 "FATAL EXCEPTION|SecurityException" | head -120
+          echo "--- aipro lines"; adb logcat -d | grep -E "aipro" | tail -30
           echo "--- app process"; adb shell pidof $P
           SH
       - name: enable KVM
@@ -79,6 +80,17 @@ jobs:
           script: bash -c "bash ci/smoke.sh; bash ci-assist2.sh | tee out/assist-log.txt"
         env:
           RG_CASES: "C1 C2 C6 C10 C11 C12"
+      - name: v7a APK static evidence (not run)
+        if: matrix.which == 'secure-arm64'
+        run: |
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          A=dl/AI-Pro-v0.8.9-secure-v7a-beta1.apk
+          sha256sum $A
+          "$BT/apksigner" verify --verbose --print-certs $A | grep -E "Verified using v3 |certificate SHA-256"
+          "$BT/aapt2" dump badging $A | grep -E "^package|native-code|uses-permission"
+          "$BT/aapt2" dump xmltree --file AndroidManifest.xml $A | grep -i -c debuggable || true
+          rm -rf /tmp/x && mkdir /tmp/x && (cd /tmp/x && unzip -q "$GITHUB_WORKSPACE/$A" 'lib/*')
+          ls /tmp/x/lib; for f in /tmp/x/lib/armeabi-v7a/*.so; do echo -n "$(basename $f) "; readelf -h $f | grep -E 'Class|Machine' | tr -s ' ' | tr '\n' ' '; echo; done
       - name: print verdicts and logs
         if: always()
         run: |
