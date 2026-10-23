@@ -135,6 +135,12 @@ if want C11; then
 page; overlay; tapw 2 0; g 2 0; HX=$XR; HY=$YM; g 2 1; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $((XR-65)) $YM; sleep .5; shot rg-c11-mid; mev UP $((XR-65)) $YM; sleep 3; shot rg-c11
 check RG_C11_END_HANDLE_MID "golf hotel" "$(tapcopy)"
 fi
+if want C12; then
+# C12 loupe near left edge and right edge: tap golf, drag end handle to near left edge; tap charlie row end handle to right edge
+page; overlay; tapw 2 0; g 2 0; HX=$XR; HY=$YM; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XL)/2)) $HY; sleep .3; mev MOVE $((XL+20)) $YM; sleep .5; shot rg-c12-left-mid; mev UP $((XL+20)) $YM; sleep 3; shot rg-c12-left
+page; overlay; tapw 0 2; g 0 2; HX=$XR; HY=$YM; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $((HX+60)) $HY; sleep .3; mev MOVE $((W-30)) $YM; sleep .5; shot rg-c12-right-mid; mev UP $((W-30)) $YM; sleep 3; shot rg-c12-right
+verdict "RG_C12_LOUPE_EDGES=captured (visual review only)"
+fi
 if want C3; then
 # C3 start handle dragged past the end swaps: bravo, start handle to delta -> bravo charlie delta
 page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $((SY+80)); sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $((XR-6)) $YM; sleep .5; mev UP $((XR-6)) $YM; sleep 3; shot rg-c3
