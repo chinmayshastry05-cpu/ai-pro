@@ -70,14 +70,14 @@ jobs:
           git checkout -q -b beta/secure-src
           git add -A app
           git commit -q -m "0.8.9 secure beta: release build, narrower accessibility events, drop unused RECORD_AUDIO, purge old cached captures"
-          git push origin beta/secure-src
+          git push --force origin beta/secure-src
           git checkout -q -b beta/secure-v7a-src
           sed -i "s/abiFilters 'arm64-v8a'/abiFilters 'armeabi-v7a'/; s/versionCode 35/versionCode 36/; s/versionName \"0.8.9-secure-beta1\"/versionName \"0.8.9-secure-v7a-beta1\"/" app/build.gradle
           grep -q "abiFilters 'armeabi-v7a'" app/build.gradle
           grep -q 'versionCode 36' app/build.gradle
           git add app/build.gradle
           git commit -q -m "0.8.9 secure beta, 32-bit variant: ABI filter and version only"
-          git push origin beta/secure-v7a-src
+          git push --force origin beta/secure-v7a-src
       - name: build v7a release
         run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process && cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/v7a-unsigned.apk
       - name: sign both
@@ -183,51 +183,72 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: "smoke-${{ matrix.which }}", path: ci/out/ }
-  publish:
-    needs: [ build, smoke ]
+  assist:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [ baseline-0.8.9, secure-arm64 ]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-        with: { ref: beta/secure-src }
       - uses: actions/download-artifact@v4
         with: { name: secure-apks, path: dl }
-      - uses: actions/download-artifact@v4
-        with: { name: smoke-baseline-0.8.9, path: base }
-      - uses: actions/download-artifact@v4
-        with: { name: smoke-secure-arm64, path: sec }
-      - name: secure build must not regress against baseline 0.8.9 on the same emulator checks
+      - name: place the APK under test
         run: |
           set -e
-          norm() { sed -E 's/^([A-Za-z0-9_]+)=([A-Z_]+).*/\1=\2/' "$1" | grep -E '^RG_' | sort; }
-          norm base/rg-verdicts.txt > /tmp/b.txt; norm sec/rg-verdicts.txt > /tmp/s.txt
-          echo "--- baseline"; cat /tmp/b.txt; echo "--- secure"; cat /tmp/s.txt
-          diff /tmp/b.txt /tmp/s.txt
-          if grep -q 'RG_INSTALL=FAIL' /tmp/s.txt; then echo install failed; exit 1; fi
-          grep -q 'RG_FATAL_LOG_COUNT=0' /tmp/s.txt
-      - name: publish prerelease
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          mkdir -p apk
+          if [ "${{ matrix.which }}" = "baseline-0.8.9" ]; then
+            curl -sL -o apk/test.apk https://github.com/${{ github.repository }}/releases/download/v0.8.9/AI-Pro-v0.8.9.apk
+            echo "e2c975c181e914d1c0fa15145809467ff5163e11d8f54a1d13288edb74360d6b  apk/test.apk" | sha256sum -c -
+          else
+            cp dl/AI-Pro-v0.8.9-secure-beta1.apk apk/test.apk
+          fi
+          sha256sum apk/test.apk
+      - name: write the test script
         run: |
-          set -e
-          S1=$(sha256sum dl/AI-Pro-v0.8.9-secure-beta1.apk | cut -d' ' -f1)
-          S2=$(sha256sum dl/AI-Pro-v0.8.9-secure-v7a-beta1.apk | cut -d' ' -f1)
-          cat > /tmp/notes.md <<MSG
-          AI Pro 0.8.9 secure beta 1. Two builds of the same 0.8.9 source (commit 150285ca) with four bounded changes. The v0.8.9 release is untouched.
-
-          Files:
-          - AI-Pro-v0.8.9-secure-beta1.apk: 64-bit (arm64-v8a), versionCode 35, sha256 $S1
-          - AI-Pro-v0.8.9-secure-v7a-beta1.apk: 32-bit (armeabi-v7a), versionCode 36, sha256 $S2
-
-          Changes:
-          - Proper release build (not debuggable). The v0.8.9 APK was a debug build with the debuggable flag set.
-          - The accessibility service now subscribes to window-state events only, not every UI event. It still takes screenshots and reads windows on demand.
-          - Removed the RECORD_AUDIO permission. The app never records audio.
-          - Cached screen crops and GIFs older than 24 hours are deleted.
-
-          Signed with the same release key as v0.8.9 (cert sha256 ab63ad55...aeb1f06). Build checks: cert, ELF class and architecture, permissions, no debuggable flag, narrowed accessibility event types. Emulator smoke checks (x86_64 emulator with ARM translation) were run on the 64-bit build and match the v0.8.9 baseline. The 32-bit build was NOT run on any device or emulator.
-
-          Android may still show "Allow restricted settings" for this app because it uses an accessibility service and is installed outside Google Play. That is an Android protection. See https://support.google.com/android/answer/12623953
-          MSG
-          gh release create v0.8.9-secure-beta1 dl/AI-Pro-v0.8.9-secure-beta1.apk dl/AI-Pro-v0.8.9-secure-v7a-beta1.apk --repo "$GITHUB_REPOSITORY" --target beta/secure-src --prerelease --title "AI Pro 0.8.9 secure beta 1 (64-bit and 32-bit)" --notes-file /tmp/notes.md
-          gh release view v0.8.9-secure-beta1 --repo "$GITHUB_REPOSITORY" --json url,isPrerelease -q '.url, .isPrerelease'
+          cat > ci-assist.sh <<'SH'
+          #!/bin/bash
+          mkdir -p out; P=com.aipro.select
+          adb wait-for-device; sleep 20
+          adb install -r apk/test.apk && echo INSTALL=OK | tee -a out/v.txt || { echo INSTALL=FAIL | tee -a out/v.txt; exit 0; }
+          adb shell dumpsys package $P | grep -E "RECORD_AUDIO|DEBUGGABLE|versionCode" | tee out/pkg.txt
+          grep -q DEBUGGABLE out/pkg.txt && echo "FLAGS_DEBUGGABLE=$(grep -o 'DEBUGGABLE' out/pkg.txt | head -1)" | tee -a out/v.txt || echo FLAGS_DEBUGGABLE=none | tee -a out/v.txt
+          adb shell cmd package query-services -a android.service.voice.VoiceInteractionService | tee out/vis.txt
+          grep -q $P out/vis.txt && echo VIS_REGISTERED=yes | tee -a out/v.txt || echo VIS_REGISTERED=no | tee -a out/v.txt
+          adb shell cmd package query-services -a android.speech.RecognitionService | grep -q $P && echo RECOG_REGISTERED=yes | tee -a out/v.txt || echo RECOG_REGISTERED=no | tee -a out/v.txt
+          adb logcat -c
+          adb shell settings put secure voice_interaction_service $P/$P.AssistService
+          adb shell settings put secure assistant $P/$P.AssistService
+          adb shell settings put secure voice_recognition_service $P/$P.AssistRecognitionService
+          sleep 8
+          adb shell settings get secure voice_interaction_service | tee out/vis-setting.txt
+          adb shell dumpsys voiceinteraction > out/dump-vi.txt 2>&1
+          grep -E "AssistService|aipro" out/dump-vi.txt | head -10 | tee out/dump-vi-grep.txt
+          grep -q "aipro" out/dump-vi.txt && echo VI_BOUND_IN_DUMPSYS=yes | tee -a out/v.txt || echo VI_BOUND_IN_DUMPSYS=no | tee -a out/v.txt
+          adb shell am start -a android.intent.action.ASSIST; sleep 8
+          adb shell screencap -p /sdcard/assist.png; adb pull /sdcard/assist.png out/assist.png
+          adb logcat -d | grep -E "aipro|AndroidRuntime|FATAL|SecurityException" | tail -40 > out/log.txt
+          echo FATAL_COUNT=$(grep -c -E "FATAL EXCEPTION|SecurityException" out/log.txt) | tee -a out/v.txt
+          adb shell pidof $P >/dev/null && echo PROCESS_ALIVE=yes | tee -a out/v.txt || echo PROCESS_ALIVE=no | tee -a out/v.txt
+          SH
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: assistant role and package checks on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          script: bash ci-assist.sh
+      - name: show verdicts
+        if: always()
+        run: cat out/v.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: "assist-${{ matrix.which }}", path: out/ }
