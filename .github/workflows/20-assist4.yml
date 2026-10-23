@@ -84,8 +84,14 @@ jobs:
           #!/bin/bash
           mkdir -p out; P=com.aipro.select; LABEL="$(cat /tmp/label.txt)"
           adb wait-for-device; sleep 10
-          adb install -r -t apk/test.apk
-          adb shell pm list packages | grep aipro
+          adb install -r -t apk/test.apk 2>&1 | tee /tmp/inst.txt
+          grep -q Success /tmp/inst.txt || { echo "PREFLIGHT FAIL: install did not succeed"; exit 1; }
+          adb shell dumpsys package $P > /tmp/pkg.txt
+          grep -E "versionCode=|versionName=|flags=|signatures|Signatures|signing" /tmp/pkg.txt | head -8
+          grep -q "versionCode=" /tmp/pkg.txt || { echo "PREFLIGHT FAIL: package not present"; exit 1; }
+          echo "--- permission declared on services in installed package:"; grep -n -i -E "AssistService|AssistSessionService" /tmp/pkg.txt | head -6
+          adb shell cmd package query-services --brief -a android.service.voice.VoiceInteractionService | tee /tmp/qs.txt
+          grep -q "com.aipro.select" /tmp/qs.txt && echo "PREFLIGHT: AI Pro VoiceInteractionService resolved" || echo "PREFLIGHT NOTE: AI Pro VoiceInteractionService NOT resolved by PackageManager"
           adb logcat -c
           adb shell input keyevent KEYCODE_HOME; sleep 2
           echo "=== NATIVE SETTINGS: default digital assistant app"
@@ -100,17 +106,21 @@ jobs:
           echo "--- query-services VIS"; adb shell cmd package query-services --brief -a android.service.voice.VoiceInteractionService
           echo "--- query-services Recognition"; adb shell cmd package query-services --brief -a android.speech.RecognitionService
           echo "--- logcat voice/settings lines"; adb logcat -d | grep -i -E "VoiceInteractionServiceInfo|VoiceInputHelper|VoiceInteractionManager|DefaultAssist|RoleManager|RoleControllerService" | tail -30
-          echo "=== DIAG fallback (NOT the native UI): role add via cmd, to test whether the system accepts the service"
-          adb shell cmd role add-role-holder --user 0 android.app.role.ASSISTANT $P 0; sleep 4
-          adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
-          for k in assistant voice_interaction_service; do echo -n "$k="; adb shell settings get secure $k; done
-          adb logcat -d | grep -i -E "VoiceInteractionServiceInfo|VoiceInteractionManager" | tail -15
           echo "app label under test: $LABEL"
           if python3 ui.py tap "$LABEL"; then sleep 3; adb shell screencap -p /sdcard/n3.png; adb pull /sdcard/n3.png out/n3-confirm.png >/dev/null; python3 ui.py show confirm; python3 ui.py tap "OK" "Set" "Yes" "Allow"; sleep 3; fi
           adb shell screencap -p /sdcard/n4.png; adb pull /sdcard/n4.png out/n4-after.png >/dev/null
           python3 ui.py show after-select
+          echo -n "enabled_accessibility_services="; adb shell settings get secure enabled_accessibility_services
           echo "--- settings secure"; for k in assistant voice_interaction_service voice_recognition_service; do echo -n "$k="; adb shell settings get secure $k; done
           echo "--- role holders"; adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
+          echo "--- role holders after native attempt"; adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT | tee /tmp/rh.txt
+          if ! grep -q com.aipro.select /tmp/rh.txt; then
+            echo "=== DIAG fallback (NOT the native UI): role add via cmd, to test whether the system accepts the service"
+            adb shell cmd role add-role-holder --user 0 android.app.role.ASSISTANT $P 0; sleep 4
+            adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
+            for k in assistant voice_interaction_service; do echo -n "$k="; adb shell settings get secure $k; done
+            adb logcat -d | grep -i -E "VoiceInteractionServiceInfo|VoiceInteractionManager" | tail -15
+          fi
           echo "--- dumpsys voiceinteraction (head)"; adb shell dumpsys voiceinteraction | head -40
           echo "=== INVOKE ASSISTANT (KEYCODE_ASSIST)"
           adb shell input keyevent KEYCODE_HOME; sleep 2
