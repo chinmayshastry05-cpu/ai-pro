@@ -1,0 +1,102 @@
+[
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_share.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_share.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_gif_badge.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/gif_badge.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_search.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_search.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_btn_gold.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/btn_gold.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/xml_assist_service.xml.flat",
+        "source": "com.aipro.select.app-main-27:/xml/assist_service.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/mipmap-xxhdpi_ic_launcher.png.flat",
+        "source": "com.aipro.select.app-main-27:/mipmap-xxhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/mipmap-mdpi_ic_launcher.png.flat",
+        "source": "com.aipro.select.app-main-27:/mipmap-mdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/mipmap-xhdpi_ic_launcher.png.flat",
+        "source": "com.aipro.select.app-main-27:/mipmap-xhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_close.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_close.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_panel_bg.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/panel_bg.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_gif.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_gif.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_bubble.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/bubble.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/mipmap-hdpi_ic_launcher.png.flat",
+        "source": "com.aipro.select.app-main-27:/mipmap-hdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_chip_bg.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/chip_bg.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_pill_bg.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/pill_bg.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_chip_close.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/chip_close.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_pin.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_pin.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_text.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_text.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/xml_stt_service_metadata.xml.flat",
+        "source": "com.aipro.select.app-main-27:/xml/stt_service_metadata.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_save.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_save.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_ic_copy_img.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/ic_copy_img.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/drawable_toolbar_bg.xml.flat",
+        "source": "com.aipro.select.app-main-27:/drawable/toolbar_bg.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/xml_aipro_accessibility_service.xml.flat",
+        "source": "com.aipro.select.app-main-27:/xml/aipro_accessibility_service.xml"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/mipmap-xxxhdpi_ic_launcher.png.flat",
+        "source": "com.aipro.select.app-main-27:/mipmap-xxxhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "com.aipro.select.app-merged_res-26:/xml_shortcuts.xml.flat",
+        "source": "com.aipro.select.app-main-27:/xml/shortcuts.xml"
+    }
+]

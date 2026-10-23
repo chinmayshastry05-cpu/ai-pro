@@ -35,7 +35,15 @@ class ImageProvider : ContentProvider() {
         val n = uri.pathSegments.firstOrNull() ?: return "image/*"
         return if (n.endsWith(".gif")) "image/gif" else "image/png"
     }
-    override fun onCreate() = true
+    override fun onCreate(): Boolean {
+        // Crops and GIFs shared through this provider live in cache/img. Delete anything older than 24 h so old screen captures do not linger.
+        try {
+            File(context!!.cacheDir, "img").listFiles()?.forEach {
+                if (System.currentTimeMillis() - it.lastModified() > 24L * 3600L * 1000L) it.delete()
+            }
+        } catch (e: Exception) { }
+        return true
+    }
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
     override fun update(uri: Uri, values: ContentValues?, s: String?, a: Array<out String>?) = 0
     override fun delete(uri: Uri, s: String?, a: Array<out String>?) = 0
