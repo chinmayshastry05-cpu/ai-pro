@@ -53,6 +53,10 @@ PY
 check() { # name expected actual
   if [ "$3" = "$2" ]; then verdict "$1=PASS (copied '$3')"; else verdict "$1=FAIL (expected '$2' got '$3')"; fi; }
 
+# C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
+N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1; adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html" >/dev/null; sleep 8; dismiss; ui
+overlay; for k in 1 2 3; do adb shell input tap $((W*30/100)) $((H*19/100)); sleep 5; dismiss; if has Copy; then break; fi; done; shot rg-c0
+if has Copy; then verdict "RG_C0_CONTROL_TESTPAGE_TAP=PASS"; else verdict "RG_C0_CONTROL_TESTPAGE_TAP=FAIL"; fi
 # C1 tap selects one word
 page; overlay; tapw 0 1; shot rg-c1; check RG_C1_TAP_WORD "bravo" "$(tapcopy)"
 # C2 end handle drag extends the range alpha..charlie
