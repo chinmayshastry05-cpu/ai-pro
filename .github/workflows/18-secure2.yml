@@ -1,0 +1,290 @@
+name: secure-beta2
+on:
+  push:
+    branches: [ 'beta/secure2' ]
+    paths: [ '.github/workflows/18-secure2.yml' ]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+    steps:
+      - name: require signing secrets
+        run: test -n "$KS_B64" || { echo "no keystore secret"; exit 1; }
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0, path: src }
+      - name: confirm main is the accepted 0.8.9 source
+        run: test "$(git -C src rev-parse HEAD)" = "150285ca42d40d9dbe046aa76033def21e34d142"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: apply the bounded hardening changes
+        run: |
+          set -e
+          cd src
+          python3 - <<'PY'
+          import re
+          p='app/src/main/AndroidManifest.xml'
+          s=open(p).read()
+          bad='android:permission="android.permission.BIND_VOICE_INTERACTION_SERVICE"'
+          assert s.count(bad)==1
+          s=s.replace(bad,'android:permission="android.permission.BIND_VOICE_INTERACTION"')
+          sess='android:name=".AssistSessionService"\n            android:exported="false"/>'
+          assert s.count(sess)==1
+          s=s.replace(sess,'android:name=".AssistSessionService"\n            android:permission="android.permission.BIND_VOICE_INTERACTION"\n            android:exported="false"/>')
+          open(p,'w').write(s)
+          p='app/src/main/res/xml/aipro_accessibility_service.xml'
+          s=open(p).read()
+          assert 'accessibilityEventTypes="typeAllMask"' in s
+          s=s.replace('accessibilityEventTypes="typeAllMask"','accessibilityEventTypes="typeWindowStateChanged"')
+          open(p,'w').write(s)
+          p='app/src/main/AndroidManifest.xml'
+          s=open(p).read()
+          line='    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n'
+          assert line in s
+          s=s.replace(line,'')
+          open(p,'w').write(s)
+          p='app/src/main/java/com/aipro/select/ImageProvider.kt'
+          s=open(p).read()
+          old='    override fun onCreate() = true\n'
+          new=('    override fun onCreate(): Boolean {\n'
+               '        // Crops and GIFs shared through this provider live in cache/img. Delete anything older than 24 h so old screen captures do not linger.\n'
+               '        try {\n'
+               '            File(context!!.cacheDir, "img").listFiles()?.forEach {\n'
+               '                if (System.currentTimeMillis() - it.lastModified() > 24L * 3600L * 1000L) it.delete()\n'
+               '            }\n'
+               '        } catch (e: Exception) { }\n'
+               '        return true\n'
+               '    }\n')
+          assert old in s
+          s=s.replace(old,new)
+          open(p,'w').write(s)
+          PY
+          sed -i 's/versionCode 33/versionCode 35/; s/versionName "0.8.9"/versionName "0.8.9-secure-beta1"/' app/build.gradle
+          grep -q 'versionCode 35' app/build.gradle
+          git diff --stat
+          git diff
+      - name: build arm64 release
+        run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process && cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/arm64-unsigned.apk
+      - name: commit arm64 variant to source branch
+        run: |
+          set -e
+          cd src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b beta/secure2-src
+          git add -A app
+          git commit -q -m "0.8.9 secure beta: release build, narrower accessibility events, correct the assistant service binding permission, drop unused RECORD_AUDIO, purge old cached captures"
+          git push --force origin beta/secure2-src
+          git checkout -q -b beta/secure2-v7a-src
+          sed -i "s/abiFilters 'arm64-v8a'/abiFilters 'armeabi-v7a'/; s/versionCode 35/versionCode 36/; s/versionName \"0.8.9-secure-beta1\"/versionName \"0.8.9-secure-v7a-beta1\"/" app/build.gradle
+          grep -q "abiFilters 'armeabi-v7a'" app/build.gradle
+          grep -q 'versionCode 36' app/build.gradle
+          git add app/build.gradle
+          git commit -q -m "0.8.9 secure beta, 32-bit variant: ABI filter and version only"
+          git push --force origin beta/secure2-v7a-src
+      - name: build v7a release
+        run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process && cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/v7a-unsigned.apk
+      - name: sign both
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          mkdir -p /tmp/out
+          echo "$KS_B64" | base64 -d > /tmp/ks.jks
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          for v in arm64:AI-Pro-v0.8.9-secure-beta1.apk v7a:AI-Pro-v0.8.9-secure-v7a-beta1.apk; do
+            k=${v%%:*}; n=${v#*:}
+            "$BT/zipalign" -f 4 /tmp/$k-unsigned.apk /tmp/$k-aligned.apk
+            "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" --ks-key-alias "$KEY_ALIAS" --out /tmp/out/$n /tmp/$k-aligned.apk
+          done
+          rm -f /tmp/ks.jks
+      - name: static checks on both APKs
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          for pair in AI-Pro-v0.8.9-secure-beta1.apk:arm64-v8a:35 AI-Pro-v0.8.9-secure-v7a-beta1.apk:armeabi-v7a:36; do
+            n=${pair%%:*}; r=${pair#*:}; abi=${r%%:*}; code=${r#*:}
+            A=/tmp/out/$n
+            echo "=== $n"
+            "$BT/apksigner" verify --verbose --print-certs $A | tee /tmp/cert.txt
+            grep -q "ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06" /tmp/cert.txt
+            "$BT/aapt2" dump badging $A > /tmp/badging.txt
+            grep -E "^package|sdkVersion|native-code|uses-permission" /tmp/badging.txt
+            grep -q "versionCode='$code'" /tmp/badging.txt
+            grep -q "native-code: '$abi'" /tmp/badging.txt
+            test "$(grep -c '^native-code' /tmp/badging.txt)" = "1"
+            if grep -q "RECORD_AUDIO" /tmp/badging.txt; then echo "RECORD_AUDIO present"; exit 1; fi
+            "$BT/aapt2" dump xmltree --file AndroidManifest.xml $A > /tmp/manifest.txt
+            grep -c 'android.permission.BIND_VOICE_INTERACTION"' /tmp/manifest.txt | grep -qx 2
+            if grep -q 'BIND_VOICE_INTERACTION_SERVICE' /tmp/manifest.txt; then echo "old misspelled permission present"; exit 1; fi
+            grep -E -B3 'BIND_VOICE_INTERACTION|BIND_RECOGNITION' /tmp/manifest.txt | grep -E 'name\(|permission' 
+            if grep -qi "debuggable" /tmp/manifest.txt; then echo "debuggable flag present"; exit 1; fi
+            unzip -l $A | grep 'lib/' > /tmp/libs.txt
+            test "$(grep -c "lib/$abi/" /tmp/libs.txt)" = "8"
+            test "$(grep -c 'lib/' /tmp/libs.txt)" = "8"
+            rm -rf /tmp/x && mkdir /tmp/x && (cd /tmp/x && unzip -q $A 'lib/*')
+            for f in /tmp/x/lib/$abi/*.so; do readelf -h $f | grep -E 'Class|Machine' | tr '\n' ' '; echo; done | tee /tmp/elf.txt
+            found=0
+            for x in $(unzip -Z1 $A | grep '^res/.*\.xml$'); do
+              "$BT/aapt2" dump xmltree --file $x $A > /tmp/xt.txt 2>/dev/null || continue
+              if grep -q canTakeScreenshot /tmp/xt.txt; then
+                echo "a11y config file: $x"
+                grep -E "ventTypes|canTakeScreenshot|canRetrieveWindowContent|lags" /tmp/xt.txt
+                grep -q "ventTypes" /tmp/xt.txt || { echo "no eventTypes attribute"; exit 1; }
+                if grep -E "ventTypes" /tmp/xt.txt | grep -q -E "0xffffffff|=-1|=4294967295|typeAllMask"; then echo "event types still all"; exit 1; fi
+                found=1
+              fi
+            done
+            test "$found" = "1"
+            sha256sum $A
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: secure-apks, path: /tmp/out/ }
+  evidence:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [ baseline-0.8.9, secure-arm64 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: test/muse-v7 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: secure-apks
+          path: dl
+      - name: place the APK under test
+        run: |
+          set -e
+          mkdir -p app/build/outputs/apk/debug apk
+          if [ "${{ matrix.which }}" = "baseline-0.8.9" ]; then
+            curl -sL -o apk/test.apk https://github.com/${{ github.repository }}/releases/download/v0.8.9/AI-Pro-v0.8.9.apk
+            echo "e2c975c181e914d1c0fa15145809467ff5163e11d8f54a1d13288edb74360d6b  apk/test.apk" | sha256sum -c -
+          else
+            cp dl/AI-Pro-v0.8.9-secure-beta1.apk apk/test.apk
+          fi
+          cp apk/test.apk app/build/outputs/apk/debug/app-debug.apk
+          sha256sum apk/test.apk
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          "$BT/aapt2" dump badging apk/test.apk | grep -E "application-label:|^package"
+          "$BT/aapt2" dump badging apk/test.apk | grep -m1 "application-label:" | sed "s/application-label:'\(.*\)'/\1/" > /tmp/label.txt
+          cat /tmp/label.txt
+      - run: python3 -m pip install --user pillow
+      - run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
+      - name: write the native settings script
+        run: |
+          mkdir -p out
+          cat > ui.py <<'PY'
+          import subprocess,sys,re,xml.etree.ElementTree as ET,time
+          def sh(c): return subprocess.run(c,shell=True,capture_output=True,text=True).stdout
+          def dump():
+              sh('adb shell uiautomator dump /sdcard/ui.xml'); x=sh('adb shell cat /sdcard/ui.xml')
+              try: r=ET.fromstring(x[x.index('<'):])
+              except Exception: return []
+              out=[]
+              for n in r.iter('node'):
+                  t=(n.get('text') or n.get('content-desc') or '').strip()
+                  m=re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]',n.get('bounds') or '')
+                  if t and m:
+                      a=list(map(int,m.groups())); out.append((t,(a[0]+a[2])//2,(a[1]+a[3])//2))
+              return out
+          def show(tag):
+              print('--- UI texts:',tag,[t for t,_,_ in dump()])
+          def tap(*names):
+              for _ in range(4):
+                  for t,x,y in dump():
+                      for n in names:
+                          if n.lower() in t.lower():
+                              print('TAP',repr(t)); sh(f'adb shell input tap {x} {y}'); return True
+                  sh('adb shell input swipe 500 1500 500 600 300'); time.sleep(1)
+              print('NOT FOUND',names); return False
+          if __name__=='__main__':
+              a=sys.argv[1]
+              if a=='show': show(sys.argv[2])
+              if a=='tap': sys.exit(0 if tap(*sys.argv[2:]) else 1)
+          PY
+          cat > ci-assist2.sh <<'SH'
+          #!/bin/bash
+          mkdir -p out; P=com.aipro.select; LABEL="$(cat /tmp/label.txt)"
+          adb wait-for-device; sleep 10
+          adb logcat -c
+          adb shell input keyevent KEYCODE_HOME; sleep 2
+          echo "=== NATIVE SETTINGS: default digital assistant app"
+          adb shell am start -a android.settings.VOICE_INPUT_SETTINGS; sleep 5
+          adb shell screencap -p /sdcard/n1.png; adb pull /sdcard/n1.png out/n1-settings.png >/dev/null
+          python3 ui.py show voice-input-settings
+          python3 ui.py tap "Digital assistant app" "Default digital assistant" "Assist app"; sleep 4
+          adb shell screencap -p /sdcard/n2.png; adb pull /sdcard/n2.png out/n2-picker.png >/dev/null
+          python3 ui.py show picker
+          echo "app label under test: $LABEL"
+          if python3 ui.py tap "$LABEL"; then sleep 3; adb shell screencap -p /sdcard/n3.png; adb pull /sdcard/n3.png out/n3-confirm.png >/dev/null; python3 ui.py show confirm; python3 ui.py tap "OK" "Set" "Yes" "Allow"; sleep 3; fi
+          adb shell screencap -p /sdcard/n4.png; adb pull /sdcard/n4.png out/n4-after.png >/dev/null
+          python3 ui.py show after-select
+          echo "--- settings secure"; for k in assistant voice_interaction_service voice_recognition_service; do echo -n "$k="; adb shell settings get secure $k; done
+          echo "--- role holders"; adb shell cmd role get-role-holders --user 0 android.app.role.ASSISTANT
+          echo "--- dumpsys voiceinteraction (head)"; adb shell dumpsys voiceinteraction | head -40
+          echo "=== INVOKE ASSISTANT (KEYCODE_ASSIST)"
+          adb shell input keyevent KEYCODE_HOME; sleep 2
+          adb shell input keyevent KEYCODE_ASSIST; sleep 8
+          adb shell screencap -p /sdcard/n5.png; adb pull /sdcard/n5.png out/n5-assist-invoked.png >/dev/null
+          python3 ui.py show assist-invoked
+          adb shell dumpsys activity activities | grep -E "topResumedActivity|mResumedActivity" | head -3
+          echo "--- logcat FATAL/Security (14 lines context)"
+          adb logcat -d | grep -E -A14 "FATAL EXCEPTION|SecurityException" | head -100
+          echo "--- app process"; adb shell pidof $P
+          SH
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: smoke then native assistant selection on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          script: bash -c "mkdir -p out; bash ci/smoke.sh || true; bash ci-assist2.sh 2>&1 | tee out/assist-log.txt"
+        env:
+          RG_CASES: "C1 C2 C6 C10 C11 C12"
+      - name: print verdicts and logs
+        if: always()
+        run: |
+          echo "=== RG VERDICTS"; cat ci/out/rg-verdicts.txt || true
+          echo "=== ASSIST LOG"; cat out/assist-log.txt || true
+      - name: print screenshots as chunked base64 jpeg
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import base64,io,glob
+          from PIL import Image
+          files=sorted(glob.glob('ci/out/**/*.png',recursive=True))+sorted(glob.glob('out/**/*.png',recursive=True))
+          print('FILES',files)
+          for f in files:
+              im=Image.open(f).convert('RGB'); w,h=im.size; im=im.resize((320,int(h*320/w)))
+              b=io.BytesIO(); im.save(b,'JPEG',quality=45)
+              s=base64.b64encode(b.getvalue()).decode(); n=0
+              for i in range(0,len(s),160):
+                  print('@@L',f.split('/')[-1],n,s[i:i+160]); n+=1
+              print('@@DONE',f.split('/')[-1],n)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.which }}
+          path: |
+            ci/out/
+            out/
