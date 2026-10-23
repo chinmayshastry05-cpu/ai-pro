@@ -7,3 +7,4 @@ service, opens ci/testpage.html over http://10.0.2.2:8901, launches the overlay,
 drag-selects a text line, taps a word, and saves verdicts + logcat + screenshots
 to the `test-results` artifact. Report the run URL, verdict files, and any
 FATAL/SIGSEGV logcat lines back.
+v8 candidate build + C1 C2 C7 run.
