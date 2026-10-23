@@ -10,7 +10,7 @@ ui() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb pull /sdcar
 has() { ui; grep -q "text=\"$1\"" /tmp/u.xml; }
 alive() { adb shell pidof $PKG >/dev/null 2>&1; }
 shot() { adb shell screencap -p /sdcard/$1.png; adb pull /sdcard/$1.png $OUT/ >/dev/null 2>&1; }
-mev() { [ $INVALID = 1 ] && return; echo "mev $* top=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@" </dev/null; }
+mev() { [ $INVALID = 1 ] && return; if [ "$1" = DOWN ] && { [ "$2" -lt 80 ] || [ "$2" -gt $((W-80)) ]; }; then INVALID=1; echo "INVALID: gesture start x=$2 is inside the system edge-back zone" >> $OUT/rg-notes.txt; return; fi; echo "mev $* top=$(adb shell dumpsys activity activities </dev/null 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@" </dev/null; }
 magcount() { adb shell dumpsys SurfaceFlinger 2>/dev/null | grep -ci "magnifier surface"; }
 dismiss() { for i in 1 2 3; do ui; for t in "Wait" "No thanks" "Use without an account"; do
   B=$(python3 - "$t" <<'PY'
@@ -64,7 +64,17 @@ calib() { local L; L=$(adb logcat -d -s RGOBS:D 2>/dev/null | grep tapDetect | t
   local dx=$(python3 -c "print(int(round($TPX-$bx)))"); local dy=$(python3 -c "print(int(round($TPY-$by)))")
   echo "calib: tapped screen $TPX,$TPY -> bmp $bx,$by ; applying offset $dx,$dy (screen to overlay bitmap mismatch observed on this device)" >> $OUT/rg-notes.txt
   if [ ${dx#-} -lt 300 ] && [ ${dy#-} -lt 300 ]; then OFX=$((OFX+dx)); OFY=$((OFY+dy)); return 0; fi; return 1; }
-tapw() { g $1 $2; [ $INVALID = 1 ] && return; for k in 1 2 3 4; do TPX=$XC; TPY=$YM; adb shell input tap $XC $YM; sleep 5; dismiss; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; if [ $OFX = 0 ] && [ $OFY = 0 ] && calib; then g $1 $2; fi; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
+tapchk() { adb logcat -d -s RGOBS:D | grep tapDetect | tail -1 > /tmp/tl.txt; python3 - >> $OUT/rg-notes.txt <<'PY3'
+import re
+l=open('/tmp/tl.txt').read(); m=re.search(r'bmp=([0-9.]+),([0-9.]+)',l)
+if not m: print('tapchk: no tapDetect line')
+else:
+    x,y=float(m.group(1)),float(m.group(2)); bs=re.findall(r'\[([0-9.]+),([0-9.]+)\]\[([0-9.]+),([0-9.]+)\]',l)
+    hit=[b for b in bs if float(b[0])<=x<=float(b[2]) and float(b[1])<=y<=float(b[3])]
+    print('tapchk: bmp=%.0f,%.0f inside_word_box=%s (%d boxes)'%(x,y,'YES' if hit else 'NO',len(bs)))
+PY3
+}
+tapw() { g $1 $2; [ $INVALID = 1 ] && return; for k in 1 2 3 4; do TPX=$XC; TPY=$YM; adb shell input tap $XC $YM; sleep 5; dismiss; tapchk; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; if [ $OFX = 0 ] && [ $OFY = 0 ] && calib; then g $1 $2; fi; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
 # paste check: after Copy the overlay finishes and Chrome shows the page again
 paste_text() { sleep 2; ui; read TXL TYM TXR TXC < <(python3 - $DPI <<'PY'
 import re,sys
@@ -138,7 +148,7 @@ fi
 if want C7; then
 # C7 rectangle drag over delta..foxtrot: clean and jittery drags must select the same text
 for MODE in clean jitter; do
-  page; overlay; g 1 0; X0=$((XL-10)); Y0=$((YM-40)); g 1 2; X1=$((XR+10)); Y1=$((YM+40))
+  page; overlay; g 1 0; X0=$((XL-4)); Y0=$((YM-40)); g 1 2; X1=$((XR+10)); Y1=$((YM+40))
   mev DOWN $X0 $Y0
   for i in $(seq 1 30); do X=$((X0+(X1-X0)*i/30)); Y=$((Y0+(Y1-Y0)*i/30)); [ $MODE = jitter ] && Y=$((Y+(i%2)*10-5)); mev MOVE $X $Y; done
   shot rg-c7-$MODE-mid; mev UP $X1 $Y1; sleep 4; shot rg-c7-$MODE
