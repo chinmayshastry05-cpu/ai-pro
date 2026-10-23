@@ -130,6 +130,11 @@ if want C2; then
 page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $((XR-65)) $YM; sleep .5; shot rg-c2-mid; mev UP $((XR-65)) $YM; sleep 3; shot rg-c2
 check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
 fi
+if want C11; then
+# C11 loupe mid-screen: tap golf (row 2), drag its end handle toward hotel, capture mid-drag
+page; overlay; tapw 2 0; g 2 0; HX=$XR; HY=$YM; g 2 1; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $((XR-65)) $YM; sleep .5; shot rg-c11-mid; mev UP $((XR-65)) $YM; sleep 3; shot rg-c11
+check RG_C11_END_HANDLE_MID "golf hotel" "$(tapcopy)"
+fi
 if want C3; then
 # C3 start handle dragged past the end swaps: bravo, start handle to delta -> bravo charlie delta
 page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $((SY+80)); sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $((XR-6)) $YM; sleep .5; mev UP $((XR-6)) $YM; sleep 3; shot rg-c3
