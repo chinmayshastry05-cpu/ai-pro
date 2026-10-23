@@ -101,6 +101,25 @@ overlay0() { [ $INVALID = 1 ] && return; adb shell am start -n $PKG/.MainActivit
 calib2() { KX=1.08646; DX=-46.69; KY=1.08646; DY=-139.07; echo "smoke: fixed transform $KX $DX $KY $DY (no logging build)" >> $OUT/rg-notes.txt; }
 tapchk() { :; }
 calib() { return 1; }
+if want C10; then
+# C10 screen recordings of gesture start/end frames: tap, circle, rectangle (for plus mark / crop box / flash / Reading text / stray handles review)
+rec_start() { adb shell "rm -f /sdcard/$1.mp4; screenrecord --time-limit 30 /sdcard/$1.mp4" </dev/null >/dev/null 2>&1 & RECPID=$!; sleep 3; }
+rec_stop() { sleep 2; adb shell pkill -2 screenrecord </dev/null; sleep 3; wait $RECPID 2>/dev/null; adb pull /sdcard/$1.mp4 $OUT/ >/dev/null 2>&1; }
+page; overlay; g 0 1; rec_start rec-tap; for k in 1 2 3; do adb shell input tap $XC $YM; sleep 4; has Copy && break; done; shot rg-c10-tap; rec_stop rec-tap
+page; overlay; g 2 1
+python3 - $XC $YM $DPI > /tmp/circ.txt <<'PY'
+import math,sys
+cx,cy,dpi=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); d=dpi/160.0
+for i in range(0,41):
+    a=2*math.pi*i/36; print(int(cx+50*d*math.cos(a)), int(cy+30*d*math.sin(a)))
+PY
+awk 'NR==1{print "input motionevent DOWN " $1 " " $2; next}{print "input motionevent MOVE " $1 " " $2}' /tmp/circ.txt > /tmp/circ.sh
+X=$(tail -1 /tmp/circ.txt | cut -d' ' -f1); Y=$(tail -1 /tmp/circ.txt | cut -d' ' -f2)
+rec_start rec-circle; [ $INVALID = 1 ] || adb shell < /tmp/circ.sh; [ $INVALID = 1 ] || adb shell input motionevent UP $X $Y; sleep 4; shot rg-c10-circle; rec_stop rec-circle
+page; overlay; g 1 0; X0=$((XL-4)); Y0=$((YM-40)); g 1 2; X1=$((XR+10)); Y1=$((YM+40))
+rec_start rec-rect; mev DOWN $X0 $Y0; for i in $(seq 1 15); do mev MOVE $((X0+(X1-X0)*i/15)) $((Y0+(Y1-Y0)*i/15)); done; mev UP $X1 $Y1; sleep 4; shot rg-c10-rect; rec_stop rec-rect
+verdict "RG_C10_RECORDINGS=captured (visual review only, no automatic verdict)"
+fi
 if want C0; then
 # C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
 page "http://10.0.2.2:8901/testpage.html" "quick brown"
@@ -113,7 +132,7 @@ page; overlay; tapw 0 1; shot rg-c1; check RG_C1_TAP_WORD "bravo" "$(tapcopy)"
 fi
 if want C2; then
 # C2 end handle drag extends the range alpha..charlie
-page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $XC $YM; sleep .5; shot rg-c2-mid; mev UP $XC $YM; sleep 3; shot rg-c2
+page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $((XR-65)) $YM; sleep .5; shot rg-c2-mid; mev UP $((XR-65)) $YM; sleep 3; shot rg-c2
 check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
 fi
 if want C3; then
