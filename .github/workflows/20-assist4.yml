@@ -84,6 +84,8 @@ jobs:
           #!/bin/bash
           mkdir -p out; P=com.aipro.select; LABEL="$(cat /tmp/label.txt)"
           adb wait-for-device; sleep 10
+          adb install -r -t apk/test.apk
+          adb shell pm list packages | grep aipro
           adb logcat -c
           adb shell input keyevent KEYCODE_HOME; sleep 2
           echo "=== NATIVE SETTINGS: default digital assistant app"
