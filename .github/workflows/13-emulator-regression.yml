@@ -4,6 +4,59 @@ on:
     branches: [ 'test/**' ]
   workflow_dispatch:
 jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        ver: [v9]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: overlay Muse SelectActivity (hash checked)
+        run: |
+          case "${{ matrix.ver }}" in
+            v7) H=9b6b9a3ae035b0fce8fb5a1bd9081bef1f5a481b3110057f001d1cbbfcf61337;;
+            v8) H=9bfd2bdaac352cb26900755eb2085479589a88a2ef605fa748e6755474e3e62c;;
+            v9) H=e7c3942ddf976b66cac0b438feada3020338d84f0602f33ad874bcc175ec1475;;
+          esac
+          F=$(find ci -name '*SelectActivity-${{ matrix.ver }}.kt' | head -1)
+          echo "$H  $F" | sha256sum -c -
+          cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
+      - name: add test-only logcat counters (test branch only)
+        run: bash $(ls ci/*obs-inject.sh)
+      - name: build debug APK
+        run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+      - name: install pillow for screenshot diffs
+        run: python3 -m pip install --user pillow
+      - name: serve test page
+        run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: run regression checks on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          script: bash $(ls ci/*run-regression.sh)
+        env:
+          RG_CASES: "C1 C2 C3 C4 C5 C6 C7 C8 C9 C10 C11"
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.ver }}
+          path: ci/out/
   clean-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -13,10 +66,10 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
-      - name: overlay Muse v8 SelectActivity (hash checked), no test logging
+      - name: overlay Muse v9 SelectActivity (hash checked), no test logging
         run: |
-          F=$(find ci -name '*SelectActivity-v8.kt' | head -1)
-          echo "9bfd2bdaac352cb26900755eb2085479589a88a2ef605fa748e6755474e3e62c  $F" | sha256sum -c -
+          F=$(find ci -name '*SelectActivity-v9.kt' | head -1)
+          echo "e7c3942ddf976b66cac0b438feada3020338d84f0452f33ad874bcc175ec1475  $F" | sha256sum -c -
           cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
           sed -i 's/versionName "0.8.8"/versionName "0.8.9-test2-unverified"/; s/versionCode 31/versionCode 32/' app/build.gradle
           test "$(grep -c RGOBS app/src/main/java/com/aipro/select/SelectActivity.kt)" = "0"
