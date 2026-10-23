@@ -10,7 +10,7 @@ ui() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb pull /sdcar
 has() { ui; grep -q "text=\"$1\"" /tmp/u.xml; }
 alive() { adb shell pidof $PKG >/dev/null 2>&1; }
 shot() { adb shell screencap -p /sdcard/$1.png; adb pull /sdcard/$1.png $OUT/ >/dev/null 2>&1; }
-mev() { [ $INVALID = 1 ] && return; echo "mev $* top=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@"; }
+mev() { [ $INVALID = 1 ] && return; echo "mev $* top=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@" </dev/null; }
 magcount() { adb shell dumpsys SurfaceFlinger 2>/dev/null | grep -ci "magnifier surface"; }
 dismiss() { for i in 1 2 3; do ui; for t in "Wait" "No thanks" "Use without an account"; do
   B=$(python3 - "$t" <<'PY'
@@ -34,7 +34,7 @@ SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*
 N=0; INVALID=0; OCR0=0; OFX=0; OFY=0; TPX=0; TPY=0
 ocrn() { adb logcat -d -s RGOBS:D 2>/dev/null | grep -c "ocr done"; }
 num() { [[ "$1" =~ ^[0-9]+$ ]]; }
-page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dismiss; adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
+page() { INVALID=0; OFX=0; OFY=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dismiss; adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
   for k in 1 2 3 4 5 6; do adb shell am start -a android.intent.action.VIEW -d "$u?c=$N" >/dev/null; sleep 8; dismiss; ui
     if grep -q "$mark" /tmp/u.xml; then break; fi; echo "page retry $k ($u)" >> $OUT/rg-notes.txt; done
   cp /tmp/u.xml /tmp/page.xml
