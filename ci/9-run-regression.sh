@@ -10,7 +10,7 @@ ui() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb pull /sdcar
 has() { ui; grep -q "text=\"$1\"" /tmp/u.xml; }
 alive() { adb shell pidof $PKG >/dev/null 2>&1; }
 shot() { adb shell screencap -p /sdcard/$1.png; adb pull /sdcard/$1.png $OUT/ >/dev/null 2>&1; }
-mev() { [ $INVALID = 1 ] && return; adb shell input motionevent "$@"; }
+mev() { [ $INVALID = 1 ] && return; echo "mev $* top=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@"; }
 magcount() { adb shell dumpsys SurfaceFlinger 2>/dev/null | grep -ci "magnifier surface"; }
 dismiss() { for i in 1 2 3; do ui; for t in "Wait" "No thanks" "Use without an account"; do
   B=$(python3 - "$t" <<'PY'
@@ -128,7 +128,22 @@ for MODE in clean jitter; do
   check RG_C7_RECT_$MODE "delta echo foxtrot" "$(tapcopy)"
 done
 fi
+
+if want C8; then
+# C8 digit-level: tap the number 24733, drag the end handle to the boundary after the 3rd digit; copy must be 247
+page "http://10.0.2.2:8901/10-fixture.html" "24733"; overlay; tapw 3 2; g 3 2; HX=$XR; HY=$YM; W5=$((XR-XL)); DX=$((XL+W5*62/100))
+mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+DX)/2)) $HY; sleep .3; mev MOVE $DX $HY; sleep .3; mev UP $DX $HY; sleep 3; shot rg-c8-after
+echo "C8 geom XL=$XL XR=$XR DX=$DX" >> $OUT/rg-notes.txt
+check RG_C8_DIGITS_247 "247" "$(tapcopy)"
+fi
+if want C9; then
+# C9 cross-line: tap delta (row1), drag end handle onto hotel (row2 col1): copy must start delta, include echo foxtrot golf, not india
+page; overlay; tapw 1 0; g 1 0; HX=$XR; HY=$YM; g 2 1; CX=$XC; CY=$YM
+mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+CX)/2)) $(((HY+CY)/2)); sleep .3; mev MOVE $CX $CY; sleep .3; mev UP $CX $CY; sleep 3; shot rg-c9-after
+A="$(tapcopy)"; N9=$(printf '%s' "$A" | tr '\n' ' ' | sed 's/  */ /g')
+case "$N9" in delta*echo*foxtrot*golf*) case "$N9" in *india*) verdict "RG_C9_CROSSLINE=FAIL (includes india: '$A')";; *) verdict "RG_C9_CROSSLINE=PASS (copied '$N9')";; esac;; *) verdict "RG_C9_CROSSLINE=FAIL (got '$A')";; esac
+fi
 adb logcat -d > $OUT/rg-logcat.txt
 F=$(grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/rg-logcat.txt); verdict "RG_FATAL_LOG_COUNT=$F"
-adb logcat -d -s RGOBS:D > $OUT/rg-obs.txt; echo "=== RGOBS (test-only counters/coords) ==="; head -80 $OUT/rg-obs.txt
+adb logcat -d -s RGOBS:D > $OUT/rg-obs.txt; cat $OUT/rg-mev.txt 2>/dev/null | head -150; echo "=== RGOBS (test-only counters/coords) ==="; head -80 $OUT/rg-obs.txt
 echo "=== RG VERDICTS ==="; cat $V
