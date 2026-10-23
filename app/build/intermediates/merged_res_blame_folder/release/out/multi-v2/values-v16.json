@@ -1,0 +1,38 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.aipro.select.app-mergeReleaseResources-24:/values-v16/values-v16.xml",
+            "map": [
+                {
+                    "source": "/home/runner/.gradle/caches/transforms-3/2739d979de140d3981958ea63dea87b8/transformed/core-1.9.0/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "65",
+                        "endOffsets": "116"
+                    }
+                },
+                {
+                    "source": "/home/runner/.gradle/caches/transforms-3/0a012361d92262ede2d561986656ea25/transformed/appcompat-1.6.1/res/values-v16/values-v16.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endLines": "5",
+                        "endColumns": "12",
+                        "endOffsets": "223"
+                    },
+                    "to": {
+                        "startLines": "3",
+                        "startColumns": "4",
+                        "startOffsets": "121",
+                        "endLines": "6",
+                        "endColumns": "12",
+                        "endOffsets": "289"
+                    }
+                }
+            ]
+        }
+    ]
+}
