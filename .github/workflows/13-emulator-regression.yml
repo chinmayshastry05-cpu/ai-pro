@@ -13,6 +13,8 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
+      - name: add test-only logcat counters (test branch only)
+        run: bash $(ls ci/*obs-inject.sh)
       - name: build debug APK
         run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
       - name: install pillow for screenshot diffs
@@ -33,6 +35,8 @@ jobs:
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
           script: bash $(ls ci/*run-regression.sh)
+        env:
+          RG_CASES: "C0 C1"
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
