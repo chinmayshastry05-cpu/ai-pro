@@ -141,7 +141,7 @@ cx,cy,dpi=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); d=dpi/160.0
 for i in range(0,41):
     a=2*math.pi*i/36; print(int(cx+50*d*math.cos(a)), int(cy+30*d*math.sin(a)))
 PY
-n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; sleep .03; n=$((n+1)); [ $n = 12 ] && shot rg-c6-mid; done < /tmp/circ.txt
+n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; sleep .03; n=$((n+1)); done < /tmp/circ.txt
 mev UP $X $Y; sleep 4; shot rg-c6-after
 check RG_C6_CIRCLE_ONLY_HOTEL "hotel" "$(tapcopy)"
 fi
