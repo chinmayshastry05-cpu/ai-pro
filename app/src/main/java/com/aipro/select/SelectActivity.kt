@@ -2,6 +2,7 @@ package com.aipro.select
 
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.AlertDialog
 import android.app.SearchManager
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -29,7 +30,10 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
 import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import java.io.File
 import java.io.FileOutputStream
@@ -47,12 +51,19 @@ class SelectActivity : Activity() {
     private var bmp: Bitmap? = null
     private var cropBmp: Bitmap? = null
     private var cropRectBmp: Rect? = null
+    private var cropPathBmp: Path? = null  // closed lasso path in bmp coords (circle-to-search); null = rectangle selection
+    private var selRangeBmp: List<RectF>? = null  // exact handle-drag range word boxes (bmp); null = not a range selection
+    /** Confirmed highlight boxes (bmp coords) for every text confirm path (tap,
+     *  handle-drag, lasso). restoreHighlight uses this for an exact restore;
+     *  selRangeBmp is null for taps, so it cannot serve this role. */
+    private var selHighlightBmp: List<RectF>? = null
     private lateinit var selView: SelectionView
     private lateinit var bar: LinearLayout      // icon capsule below selection
     private lateinit var textBar: LinearLayout  // text-action capsule below selection
     private lateinit var gifPill: LinearLayout  // "Create GIF" pill above selection
     private lateinit var closeChip: TextView
     private lateinit var miniCard: LinearLayout // translate output card
+    private lateinit var textChip: LinearLayout // CTS-style "Copy | Translate" chip above selection
     private lateinit var miniText: TextView
     private var currentText = ""
     private var selViewRect: RectF? = null      // confirmed rect in view coords
@@ -64,9 +75,27 @@ class SelectActivity : Activity() {
     private var qualityLabel: TextView? = null
     private var qualityHigh = true
     private val lineBoxes = mutableListOf<RectF>()
+    private val wordBoxes = mutableListOf<RectF>()
+    /** A recognized word with its text and per-character (symbol) boxes, bmp coords.
+     *  From ML Kit's Element.symbols; chars[i] is the box of text[i]. Only kept
+     *  when the symbol count matches the text length (else alignment is unreliable). */
+    private data class WordChars(val text: String, val box: RectF, val chars: List<RectF>)
+    private val wordChars = mutableListOf<WordChars>()
+    /** Character-level selection from a handle drag: word + [fromChar, toChar).
+     *  Null means word-level (tap, lasso, box) - Copy uses the node path. */
+    private data class CharRange(val word: WordChars, val fromChar: Int, val toChar: Int)
+    private var selCharRanges: List<CharRange>? = null
+    /** Boundary inside a word: the gap before chars[index], 0..text.length. */
+    private data class CharPos(val wc: WordChars, val index: Int)
+    private var selCharAnchorA: CharPos? = null
+    private var selCharAnchorB: CharPos? = null
+    private val tapOcrDone = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var tapRetryPending = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Ocr.init(this)   // warm Tesseract (Kannada/Hindi/English) off the main thread
+        warmTranslateModels()   // pre-download translation packs so Translate is instant later
         val b = Shared.shot
         if (b == null) { finish(); return }
         bmp = b
@@ -84,20 +113,68 @@ class SelectActivity : Activity() {
         root.setBackgroundColor(Color.TRANSPARENT)
 
         selView = SelectionView(this, b,
-            onFreePick = { vr -> confirm(snapToText(vr), false) },
+            onFreePick = { vr, isLasso, lassoPathBmp ->
+                if (isLasso) {
+                    // circle-to-search: test words against the closed path, not the
+                    // bounding rectangle - select only what the circle covers
+                    // (a loose circle around one icon must not grab its neighbours)
+                    val boxes = if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes
+                    val lassoPath = if (lassoPathBmp.size > 2) {
+                        Path().apply {
+                            moveTo(lassoPathBmp[0].x, lassoPathBmp[0].y)
+                            for (i in 1 until lassoPathBmp.size) lineTo(lassoPathBmp[i].x, lassoPathBmp[i].y)
+                            close()
+                        }
+                    } else null
+                    val covered = if (lassoPath != null) {
+                        val pb = RectF(); lassoPath.computeBounds(pb, true)
+                        val clip = Region(pb.left.toInt(), pb.top.toInt(), pb.right.toInt() + 1, pb.bottom.toInt() + 1)
+                        val region = Region(); region.setPath(lassoPath, clip)
+                        boxes.filter { region.contains(it.centerX().toInt(), it.centerY().toInt()) }
+                    } else {
+                        val rb = RectF(selView.viewToBmp(vr))
+                        boxes.filter { RectF.intersects(it, rb) }
+                    }.sortedWith(compareBy({ it.top }, { it.left }))
+                    if (covered.isNotEmpty()) {
+                        selAnchorA = covered.first(); selAnchorB = covered.last()
+                        confirmText(vr, covered.map { RectF(selView.bmpToView(it)) }, lassoPath)
+                    } else confirm(vr, false)
+                } else {
+                    val tu = textUnion(vr)
+                    if (tu != null && tu.width() * tu.height() >= vr.width() * vr.height() * 0.35f) {
+                        // rectangle text: highlight the per-word boxes in reading
+                        // order (not the line boxes), so the handles sit at the
+                        // first and last character ends.
+                        val rb = RectF(selView.viewToBmp(tu))
+                        val words = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
+                            .filter { RectF.intersects(it, rb) }
+                        val ordered = readingOrderOf(words) { it }
+                        if (ordered.isNotEmpty()) {
+                            confirmText(tu, ordered.map { RectF(selView.bmpToView(it)) })
+                        } else {
+                            confirmText(tu)
+                        }
+                    } else confirm(snapToText(vr), false)
+                }
+            },
             onTap = { x, y -> tapDetect(x, y) },
             onDragStart = { hideChrome() },
             onResizeLive = { vr -> selViewRect = vr; repositionChrome() },
-            onResizeEnd = { vr -> confirmResize(vr) })
+            onResizeEnd = { vr -> confirmResize(vr) },
+            onCursorMove = { whichEnd, x, y -> cursorPreview(whichEnd, x, y) },
+            onCursorEnd = { whichEnd, x, y -> cursorConfirm(whichEnd, x, y) },
+            onCursorDragStart = { hideChromeForCursor() },
+            onCancel = { restoreChrome() })
         root.addView(selView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         buildGifPill(); root.addView(gifPill)
         buildBar(); root.addView(bar)
         buildTextBar(); root.addView(textBar)
         buildMiniCard(); root.addView(miniCard)
+        buildTextChip(); root.addView(textChip)
         buildCloseChip(); root.addView(closeChip)
         setContentView(root)
-        // let the entry animation settle before OCR competes for CPU
-        root.postDelayed({ startTapDetectOcr(b) }, 800)
+        // start tap-detect OCR immediately so early taps already have boxes
+        root.post { startTapDetectOcr(b) }
         // EXPERIMENTAL: idle auto-select - if nothing is touched for 2s and the
         // screen has one dominant image/photo/thumbnail, select it automatically.
         // Any touch cancels it; text-heavy screens select nothing.
@@ -243,12 +320,98 @@ class SelectActivity : Activity() {
         cancelAutoSelect()
         val b = bmp ?: return
         val r = selView.viewToBmp(viewRect)
+        if (r.width() < 2 || r.height() < 2) return
         cropRectBmp = r
+        cropPathBmp = null  // rectangle selection: textFromNodes uses the rect
+        selRangeBmp = null
+        selHighlightBmp = null
+        selCharRanges = null; selCharAnchorA = null; selCharAnchorB = null  // box: word-level
         cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
         selViewRect = viewRect
+        selView.textMode = false
+        selView.setTextLines(emptyList())
+        textChip.visibility = View.GONE
         selView.setConfirmed(viewRect)
         showChrome(fromText)
         if (fromText) readText()
+    }
+
+    /** Circle-to-search text selection: per-line highlight, staggered wipe, Copy/Translate chip. */
+    private fun confirmText(viewRect: RectF, highlight: List<RectF>? = null, lassoPath: Path? = null,
+                            rangeBmp: List<RectF>? = null) {
+        cancelAutoSelect()
+        val b = bmp ?: return
+        val r = selView.viewToBmp(viewRect)
+        val rb2 = RectF(r); rb2.inset(-4f, -4f)
+        val spanBoxes = (if (wordBoxes.isNotEmpty()) wordBoxes else lineBoxes)
+            .filter { RectF.intersects(it, rb2) }.sortedWith(compareBy({ it.top }, { it.left }))
+        if (rangeBmp != null) {
+            // handle-drag range: keep the real range ends - the next handle drag
+            // must start from them, not from rectangle-based first/last boxes
+            selAnchorA = rangeBmp.firstOrNull(); selAnchorB = rangeBmp.lastOrNull()
+        } else if (lassoPath == null) {
+            // tap or rectangle: the fixed ends are the first/last boxes of the
+            // highlight itself (the tapped word, or the per-word boxes in
+            // reading order). spanBoxes may include neighbours for a tap
+            // (expanded rect), which would put the anchor on the wrong word.
+            val hb = highlight?.map { RectF(selView.viewToBmp(it)) }
+            selAnchorA = hb?.firstOrNull(); selAnchorB = hb?.lastOrNull()
+            // word-level - drop any character-level state
+            selCharRanges = null; selCharAnchorA = null; selCharAnchorB = null
+        } else {
+            // lasso: anchors are the covered words
+            selAnchorA = spanBoxes.firstOrNull(); selAnchorB = spanBoxes.lastOrNull()
+            selCharRanges = null; selCharAnchorA = null; selCharAnchorB = null
+        }
+        cropRectBmp = r
+        cropPathBmp = lassoPath  // non-null only for circle-to-search; textFromNodes then tests the path
+        selRangeBmp = rangeBmp  // non-null only for handle-drag range; Copy/Translate then extract exactly it
+        // exact confirmed highlight in bmp coords (highlight arrives in view coords);
+        // the failed-drop/cancel restore path uses this, not selRangeBmp (null for taps).
+        // viewToBmp returns Rect; wrap in RectF (fractional precision is kept via bmpToView).
+        selHighlightBmp = highlight?.map { RectF(selView.viewToBmp(it)) }
+        cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
+        selViewRect = viewRect
+        selView.textMode = true
+        selView.setTextLines(highlight ?: linesInView(viewRect))
+        selView.setConfirmed(viewRect)
+        showChrome(true)
+        gifPill.visibility = View.GONE // CTS look: the Copy | Translate chip takes that slot
+        showTextChip(viewRect)
+        readText()
+    }
+
+    /** Text lines (view coords) touched by a selection, top-to-bottom like CTS highlights. */
+    private fun linesInView(v: RectF): List<RectF> {
+        val rb = RectF(selView.viewToBmp(v))
+        return lineBoxes.filter { RectF.intersects(it, rb) }
+            .map { RectF(selView.bmpToView(it)) }
+            .sortedWith(compareBy({ it.top }, { it.left }))
+    }
+
+    /** Like snapToText but returns null when the drag covers no text (image stays a box). */
+    private fun textUnion(v: RectF): RectF? {
+        if (lineBoxes.isEmpty()) return null
+        val rb = RectF(selView.viewToBmp(v))
+        var union: RectF? = null
+        val tmp = RectF()
+        for (lb in lineBoxes) {
+            if (RectF.intersects(rb, lb)) {
+                tmp.setIntersect(rb, lb)
+                if (tmp.width() * tmp.height() > lb.width() * lb.height() * 0.25f) {
+                    if (union == null) union = RectF(lb) else union.union(lb)
+                }
+            }
+        }
+        val u = union ?: return null
+        if (u.width() * u.height() > rb.width() * rb.height() * 9f) return null
+        u.inset(-8f, -8f)
+        val b = bmp ?: return null
+        u.left = u.left.coerceIn(0f, b.width - 4f)
+        u.right = u.right.coerceIn(u.left + 4f, b.width.toFloat())
+        u.top = u.top.coerceIn(0f, b.height - 4f)
+        u.bottom = u.bottom.coerceIn(u.top + 4f, b.height.toFloat())
+        return selView.bmpToView(u)
     }
 
     /** Crop-style resize finished: recrop, replay the confirm pulse, refresh OCR if in text mode. */
@@ -256,10 +419,15 @@ class SelectActivity : Activity() {
         val b = bmp ?: return
         val r = selView.viewToBmp(viewRect)
         cropRectBmp = r
+        cropPathBmp = null  // resize reverts to rectangle semantics
+        selRangeBmp = null
+        selHighlightBmp = null
+        selCharRanges = null; selCharAnchorA = null; selCharAnchorB = null
         cropBmp = Bitmap.createBitmap(b, r.left, r.top, r.width(), r.height())
         selViewRect = viewRect
         selView.setConfirmed(viewRect)
         repositionChrome()
+        if (selView.textMode) selView.setTextLines(linesInView(viewRect))
         if (textBar.visibility == View.VISIBLE) readText()
     }
 
@@ -275,7 +443,7 @@ class SelectActivity : Activity() {
         val parent = p.parent as View
         val pw = p.width; val ph = p.height
         if (pw == 0 || ph == 0) { p.post { repositionPill(p, r) }; return }
-        val x = (r.centerX() - pw / 2f).coerceIn(dp(10f).toFloat(), parent.width - pw - dp(10f).toFloat())
+        val x = (r.centerX() - pw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - pw - dp(10f).toFloat()))
         var y = r.top - ph - dp(10f)
         if (y < dp(44f)) y = (r.top + dp(8f)).coerceAtMost((parent.height - ph - dp(10f)).toFloat())
         p.translationX = x; p.translationY = y
@@ -285,8 +453,8 @@ class SelectActivity : Activity() {
         val parent = v.parent as View
         val bw = v.width; val bh = v.height
         if (bw == 0 || bh == 0) { v.post { repositionBar(v, r) }; return }
-        val x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), parent.width - bw - dp(10f).toFloat())
-        var y = r.bottom + dp(10f)
+        val x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - bw - dp(10f).toFloat()))
+        var y = r.bottom + dp(if (v === textBar) 40f else 10f)  // text bar must clear the selection cursors (handles hang ~28dp below)
         if (y + bh > parent.height - dp(16f)) y = r.top - bh - dp(56f)
         v.translationX = x; v.translationY = y
     }
@@ -296,7 +464,25 @@ class SelectActivity : Activity() {
         bar.visibility = View.GONE
         textBar.visibility = View.GONE
         miniCard.visibility = View.GONE
+        if (::textChip.isInitialized) textChip.visibility = View.GONE
+        selView.textMode = false
+        selView.setTextLines(emptyList())
         currentText = ""
+    }
+
+    /** Cursor-handle drag: hide only the bars/chip, keep textMode + text lines so
+     *  onDraw keeps drawing the text highlight (not the image-style glow box). */
+    private fun hideChromeForCursor() {
+        visGifPill = gifPill.visibility
+        visBar = bar.visibility
+        visTextBar = textBar.visibility
+        visMiniCard = miniCard.visibility
+        visTextChip = if (::textChip.isInitialized) textChip.visibility else View.GONE
+        gifPill.visibility = View.GONE
+        bar.visibility = View.GONE
+        textBar.visibility = View.GONE
+        miniCard.visibility = View.GONE
+        if (::textChip.isInitialized) textChip.visibility = View.GONE
     }
 
     /** Smart Select style: after a free drag, grow the box to fully cover the text lines it touches. */
@@ -323,15 +509,332 @@ class SelectActivity : Activity() {
         return selView.bmpToView(union)
     }
 
+    // word-by-word selection cursors (both ends) + magnifier support
+    private var selAnchorA: RectF? = null  // first box of the current text selection (bmp)
+    private var selAnchorB: RectF? = null  // last box
+
+    private fun cursorSnap(x: Float, y: Float): RectF? {
+        // search words and lines together: a word the OCR only caught at line
+        // level (or vice versa) must still grab the handle, smallest box wins
+        val boxes = wordBoxes + lineBoxes
+        var best: RectF? = null
+        for (box in boxes) {
+            val hit = RectF(box); hit.inset(-6f, -6f)
+            if (hit.contains(x, y) && (best == null || box.width() * box.height() < best!!.width() * best!!.height())) best = RectF(box)
+        }
+        if (best != null) return best
+        // fallback: nearest box within about one line height of the drop point
+        var nb: RectF? = null; var nd = Float.MAX_VALUE
+        for (box in boxes) {
+            val dx = maxOf(box.left - x, 0f, x - box.right)
+            val dy = maxOf(box.top - y, 0f, y - box.bottom)
+            val d = kotlin.math.hypot(dx, dy)
+            if (d < nd) { nd = d; nb = box }
+        }
+        val nbb = nb ?: return null
+        return if (nd <= nbb.height()) RectF(nbb) else null
+    }
+
+    // visibility snapshot taken when a cursor drag starts; a failed drop or
+    // cancel restores exactly this, so every hidden view comes back as it was
+    private var visGifPill = View.GONE
+    private var visBar = View.GONE
+    private var visTextBar = View.GONE
+    private var visMiniCard = View.GONE
+    private var visTextChip = View.GONE
+
+    /** Put the highlight back on the confirmed selection (undo a cursor preview).
+     *  Uses selHighlightBmp (exact confirmed boxes, set for tap/handle/lasso),
+     *  not selRangeBmp (null for taps). Also restores both anchor pairs to the
+     *  confirmed ends so the next drag starts from the right place. */
+    private fun restoreHighlight() {
+        val hb = selHighlightBmp
+        if (hb != null) {
+            selView.setTextLines(hb.map { RectF(selView.bmpToView(it)) }, animate = false)
+            selAnchorA = hb.firstOrNull(); selAnchorB = hb.lastOrNull()
+            val cr = selCharRanges
+            if (cr != null && cr.isNotEmpty()) {
+                val first = cr.first(); val last = cr.last()
+                selCharAnchorA = CharPos(first.word, first.fromChar)
+                selCharAnchorB = CharPos(last.word, last.toChar)
+            } else {
+                selCharAnchorA = null; selCharAnchorB = null
+            }
+        } else {
+            val svr = selViewRect ?: return
+            selView.setTextLines(linesInView(svr), animate = false)
+        }
+    }
+
+    /** Failed drop / cancel: the selection is unchanged - restore the bars and
+     *  the highlight exactly as before the drag. Unconditional and safe: the
+     *  snapshot was taken at drag start, so it can only reproduce a state that
+     *  already existed; with selViewRect null there is no confirmed highlight
+     *  and the snapshot holds no visible selection chrome, making the call
+     *  effect-free. */
+    private fun restoreChrome() {
+        gifPill.visibility = visGifPill
+        bar.visibility = visBar
+        textBar.visibility = visTextBar
+        miniCard.visibility = visMiniCard
+        if (::textChip.isInitialized) textChip.visibility = visTextChip
+        restoreHighlight()
+    }
+
+    /** Line-aware reading order: group boxes into lines by vertical overlap
+     *  (not raw top value), lines top-to-bottom, boxes left-to-right in a line.
+     *  A box joins a line only if the vertical overlap exceeds half of the
+     *  shorter height - tightly spaced lines that merely touch stay separate. */
+    private fun <T> readingOrderOf(items: List<T>, rectOf: (T) -> RectF): List<T> {
+        if (items.isEmpty()) return items
+        val lines = mutableListOf<MutableList<T>>()
+        for (item in items.sortedWith(compareBy({ rectOf(it).top }, { rectOf(it).left }))) {
+            val r = rectOf(item)
+            val rh = r.bottom - r.top
+            val line = lines.firstOrNull { l ->
+                val top = l.minOf { rectOf(it).top }; val bottom = l.maxOf { rectOf(it).bottom }
+                val overlap = minOf(r.bottom, bottom) - maxOf(r.top, top)
+                overlap > 0.5f * minOf(rh, bottom - top)
+            }
+            if (line == null) lines.add(mutableListOf(item)) else line.add(item)
+        }
+        return lines.sortedBy { l -> l.minOf { rectOf(it).top } }
+            .flatMap { l -> l.sortedBy { rectOf(it).left } }
+    }
+
+    /** Reading-order word range between the fixed end and the dragged-to word.
+     *  Returns (boxes, swapped): swapped is true when the dragged handle crossed
+     *  the fixed end and now drives the opposite handle. */
+    private fun cursorSpan(whichEnd: Int, viewX: Float, viewY: Float): Pair<List<RectF>, Boolean>? {
+        val p = selView.viewToBmpPoint(viewX, viewY)
+        val target = cursorSnap(p.x, p.y) ?: return null
+        // same combined list as cursorSnap: the target may be a line box
+        val boxes0 = wordBoxes + lineBoxes
+        if (boxes0.isEmpty()) return null
+        val ordered = readingOrderOf(boxes0) { it }
+        val anchor = (if (whichEnd == 2) selAnchorA else selAnchorB) ?: return null
+        // value compare: cursorSnap returns a copy and OCR callbacks may rebuild the lists
+        var ai = ordered.indexOfFirst {
+            it.left == anchor.left && it.top == anchor.top && it.right == anchor.right && it.bottom == anchor.bottom
+        }
+        if (ai < 0) ai = nearestBoxIndex(ordered, anchor)
+        var ti = ordered.indexOfFirst {
+            it.left == target.left && it.top == target.top && it.right == target.right && it.bottom == target.bottom
+        }
+        if (ti < 0) ti = nearestBoxIndex(ordered, target)
+        val range = ordered.subList(minOf(ai, ti), maxOf(ai, ti) + 1)
+        val swapped = (whichEnd == 1 && ti > ai) || (whichEnd == 2 && ti < ai)
+        return Pair(range, swapped)
+    }
+
+    private fun nearestBoxIndex(ordered: List<RectF>, box: RectF): Int {
+        var bi = 0; var bd = Float.MAX_VALUE
+        for ((i, b) in ordered.withIndex()) {
+            val dx = b.centerX() - box.centerX(); val dy = b.centerY() - box.centerY()
+            val d = dx * dx + dy * dy
+            if (d < bd) { bd = d; bi = i }
+        }
+        return bi
+    }
+
+    /** Best WordChars match for a snapped box (highest IoU >= 0.3); null when the
+     *  box is line-level with no good word match - caller falls back to word-level. */
+    private fun findWordChars(box: RectF): WordChars? {
+        var best: WordChars? = null; var bestIoU = 0.3f
+        for (wc in wordChars) {
+            val iw = minOf(wc.box.right, box.right) - maxOf(wc.box.left, box.left)
+            val ih = minOf(wc.box.bottom, box.bottom) - maxOf(wc.box.top, box.top)
+            if (iw <= 0 || ih <= 0) continue
+            val inter = iw * ih
+            val union = wc.box.width() * wc.box.height() + box.width() * box.height() - inter
+            val iou = if (union > 0) inter / union else 0f
+            if (iou > bestIoU) { bestIoU = iou; best = wc }
+        }
+        return best
+    }
+
+    /** x-positions of the N+1 character boundaries, left to right. Uses the
+     *  symbol edges (midpoint of inter-symbol gaps) when the symbols are sane
+     *  (ordered, non-degenerate, count matches); else even division of the word
+     *  width (monospace fallback - tight non-monospace digits may be off by one). */
+    private fun charBoundaries(wc: WordChars): FloatArray {
+        val n = wc.text.length
+        val b = FloatArray(n + 1)
+        // sane only with exactly one box per character, ordered and non-degenerate;
+        // otherwise (e.g. digit strings with no symbols) use even-split
+        var sane = n > 0 && wc.chars.size == n
+        if (sane) {
+            for (i in wc.chars.indices) {
+                val s = wc.chars[i]
+                if (s.left >= s.right) { sane = false; break }
+                if (i > 0 && s.left < wc.chars[i - 1].left) { sane = false; break }
+            }
+        }
+        if (sane) {
+            b[0] = wc.box.left
+            for (i in 1 until n) b[i] = (wc.chars[i - 1].right + wc.chars[i].left) / 2f
+            b[n] = wc.box.right
+        } else {
+            for (i in 0..n) b[i] = wc.box.left + wc.box.width() * i / n
+        }
+        return b
+    }
+
+    /** Snap a bmp point to the nearest inter-character boundary of the word under
+     *  it. Null when the word has no character data - caller uses word-level. */
+    private fun snapToCharPos(bx: Float, by: Float): CharPos? {
+        val target = cursorSnap(bx, by) ?: return null
+        val wc = findWordChars(target) ?: return null
+        val b = charBoundaries(wc)
+        var bi = 0; var bd = Float.MAX_VALUE
+        for (i in b.indices) {
+            val d = kotlin.math.abs(b[i] - bx)
+            if (d < bd) { bd = d; bi = i }
+        }
+        return CharPos(wc, bi)
+    }
+
+    /** Visual box for a character range: the word box clipped to the boundary x's. */
+    private fun charRangeBox(cr: CharRange): RectF {
+        val b = charBoundaries(cr.word)
+        return RectF(b[cr.fromChar], cr.word.box.top, b[cr.toChar], cr.word.box.bottom)
+    }
+
+    /** Character-level range between the fixed end and the dragged-to boundary.
+     *  Returns (visual boxes, char ranges, swapped), or null when character data
+     *  is unavailable - caller falls back to the word-level cursorSpan. */
+    private fun cursorSpanChar(whichEnd: Int, bx: Float, by: Float): Triple<List<RectF>, List<CharRange>, Boolean>? {
+        val target = snapToCharPos(bx, by) ?: return null
+        // anchor: live char anchor from an in-progress char drag/selection,
+        // else convert the RectF anchor (start handle at char 0, end at char N)
+        val liveAnchor = if (whichEnd == 2) selCharAnchorA else selCharAnchorB
+        val aPos = liveAnchor ?: run {
+            val anchorRect = (if (whichEnd == 2) selAnchorA else selAnchorB) ?: return null
+            val anchorWc = findWordChars(anchorRect) ?: return null
+            CharPos(anchorWc, if (whichEnd == 2) 0 else anchorWc.text.length)
+        }
+        // dedupe: the 5 recognizers often return the same word; without this the
+        // range (and the copied text) would repeat it. Re-resolve anchor/target
+        // to the deduped objects so reference equality holds below.
+        fun dedupKey(wc: WordChars) =
+            wc.text + "|" + wc.box.left + "," + wc.box.top + "," + wc.box.right + "," + wc.box.bottom
+        val seen = HashSet<String>()
+        val deduped = wordChars.filter { wc -> seen.add(dedupKey(wc)) }
+        val aWc = deduped.find { dedupKey(it) == dedupKey(aPos.wc) } ?: return null
+        val tWc = deduped.find { dedupKey(it) == dedupKey(target.wc) } ?: return null
+        val aPosD = CharPos(aWc, aPos.index.coerceIn(0, aWc.text.length))
+        val targetD = CharPos(tWc, target.index.coerceIn(0, tWc.text.length))
+        val ordered = readingOrderOf(deduped) { it.box }
+        // reference equality: ordered holds the same WordChars objects, reordered
+        val ai = ordered.indexOfFirst { it === aWc }
+        val ti = ordered.indexOfFirst { it === tWc }
+        if (ai < 0 || ti < 0) return null
+        val ranges = mutableListOf<CharRange>()
+        if (ai == ti) {
+            val from = minOf(aPosD.index, targetD.index)
+            val to = maxOf(aPosD.index, targetD.index)
+            if (from == to) return null  // same boundary: nothing to select
+            ranges.add(CharRange(aWc, from, to))
+        } else {
+            val step = if (ai < ti) 1 else -1
+            var i = ai
+            while (true) {
+                val wc = ordered[i]
+                when {
+                    i == ai -> if (step == 1) ranges.add(CharRange(wc, aPosD.index, wc.text.length))
+                               else ranges.add(CharRange(wc, 0, aPosD.index))
+                    i == ti -> if (step == 1) ranges.add(CharRange(wc, 0, targetD.index))
+                               else ranges.add(CharRange(wc, targetD.index, wc.text.length))
+                    else -> ranges.add(CharRange(wc, 0, wc.text.length))
+                }
+                if (i == ti) break
+                i += step
+            }
+        }
+        val nonEmpty = ranges.filter { it.fromChar < it.toChar }
+        if (nonEmpty.isEmpty()) return null
+        val swapped = if (ai == ti) {
+            (whichEnd == 1 && targetD.index > aPosD.index) || (whichEnd == 2 && targetD.index < aPosD.index)
+        } else {
+            (whichEnd == 1 && ti > ai) || (whichEnd == 2 && ti < ai)
+        }
+        return Triple(nonEmpty.map { charRangeBox(it) }, nonEmpty, swapped)
+    }
+
+    private fun cursorPreview(whichEnd: Int, viewX: Float, viewY: Float) {
+        val p = selView.viewToBmpPoint(viewX, viewY)
+        // character-level first: the handle can stop between characters.
+        // Falls back to word-level when the word has no character data.
+        val cr = cursorSpanChar(whichEnd, p.x, p.y)
+        if (cr != null) {
+            if (cr.third) {
+                // the dragged handle crossed the fixed end
+                selView.flipCursorMode()
+                val first = cr.second.first(); val last = cr.second.last()
+                selCharAnchorA = CharPos(first.word, first.fromChar)
+                selCharAnchorB = CharPos(last.word, last.toChar)
+                selAnchorA = charRangeBox(first); selAnchorB = charRangeBox(last)
+            }
+            selView.setTextLines(cr.first.map { RectF(selView.bmpToView(it)) }, animate = false)
+            return
+        }
+        selCharAnchorA = null; selCharAnchorB = null
+        val r = cursorSpan(whichEnd, viewX, viewY) ?: return
+        if (r.second) {
+            // the dragged handle crossed the fixed end: it now drives the opposite handle
+            selView.flipCursorMode()
+            selAnchorA = r.first.first(); selAnchorB = r.first.last()
+        }
+        selView.setTextLines(r.first.map { RectF(selView.bmpToView(it)) }, animate = false)
+    }
+
+    private fun cursorConfirm(whichEnd: Int, viewX: Float, viewY: Float) {
+        val p = selView.viewToBmpPoint(viewX, viewY)
+        val cr = cursorSpanChar(whichEnd, p.x, p.y)
+        if (cr != null) {
+            val first = cr.second.first(); val last = cr.second.last()
+            selCharAnchorA = CharPos(first.word, first.fromChar)
+            selCharAnchorB = CharPos(last.word, last.toChar)
+            selAnchorA = charRangeBox(first); selAnchorB = charRangeBox(last)
+            selCharRanges = cr.second
+            val u = RectF(cr.first.first())
+            for (b in cr.first) u.union(b)
+            confirmText(selView.bmpToView(u), cr.first.map { RectF(selView.bmpToView(it)) }, rangeBmp = cr.first)
+            return
+        }
+        // word-level
+        selCharRanges = null; selCharAnchorA = null; selCharAnchorB = null
+        val r = cursorSpan(whichEnd, viewX, viewY)
+        if (r == null) { restoreChrome(); return }  // drop too far from text: keep the old selection, bars back
+        selAnchorA = r.first.first(); selAnchorB = r.first.last()
+        val u = RectF(r.first.first())
+        for (b in r.first) u.union(b)
+        confirmText(selView.bmpToView(u), r.first.map { RectF(selView.bmpToView(it)) }, rangeBmp = r.first)
+    }
+
     private fun tapDetect(viewX: Float, viewY: Float) {
         val p = selView.viewToBmpPoint(viewX, viewY)
         var best: RectF? = null
-        for (box in lineBoxes) {
-            if (box.contains(p.x, p.y)) {
+        for (box in wordBoxes + lineBoxes) {
+            val hit = RectF(box)
+            hit.inset(-6f, -6f) // forgiving hit-test: tight Indic line boxes miss edge taps
+            if (hit.contains(p.x, p.y)) {
                 if (best == null || box.width() * box.height() < best!!.width() * best!!.height()) best = RectF(box)
             }
         }
-        if (best == null) { shapeDetect(viewX, viewY); return }
+        if (best == null) {
+            // recognizers finish asynchronously; retry the same tap once before
+            // falling back to shape detection so an early tap on text selects it
+            if (tapOcrDone.get() < 5 && !tapRetryPending) {
+                tapRetryPending = true
+                selView.postDelayed({
+                    tapRetryPending = false
+                    if (!isFinishing && selView.confirmedRect() == null) tapDetect(viewX, viewY)
+                }, 350)
+                return
+            }
+            shapeDetect(viewX, viewY); return
+        }
         run {
             val best = best!!
             best.inset(-10f, -10f)
@@ -339,7 +842,8 @@ class SelectActivity : Activity() {
             best.right = best.right.coerceIn(best.left + 4f, bmp!!.width.toFloat())
             best.top = best.top.coerceIn(0f, bmp!!.height - 4f)
             best.bottom = best.bottom.coerceIn(best.top + 4f, bmp!!.height.toFloat())
-            confirm(selView.bmpToView(best), true)
+            val bv = selView.bmpToView(best)
+            confirmText(bv, listOf(RectF(bv)))
         }
     }
 
@@ -470,10 +974,33 @@ class SelectActivity : Activity() {
 
     private fun startTapDetectOcr(b: Bitmap) {
         val img = InputImage.fromBitmap(b, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
-        latin.process(img).addOnSuccessListener { r -> for (blk in r.textBlocks) for (ln in blk.lines) ln.boundingBox?.let { lineBoxes.add(RectF(it)) } }
-        deva.process(img).addOnSuccessListener { r -> for (blk in r.textBlocks) for (ln in blk.lines) ln.boundingBox?.let { lineBoxes.add(RectF(it)) } }
+        val recognizers = listOf(
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS),
+            TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build()))
+        for (rec in recognizers) {
+            rec.process(img).addOnSuccessListener { r ->
+                tapOcrDone.incrementAndGet()
+                for (blk in r.textBlocks) for (ln in blk.lines) {
+                    ln.boundingBox?.let { lineBoxes.add(RectF(it)) }
+                    for (el in ln.elements) {
+                        el.boundingBox?.let { wordBoxes.add(RectF(it)) }
+                        // per-character boxes for handle drags. Stored always;
+                        // charBoundaries uses the symbols when the count matches
+                        // 1:1 and falls back to even-split otherwise (e.g. digit
+                        // strings where ML Kit returns no per-symbol boxes).
+                        val ebb = el.boundingBox
+                        if (ebb != null && el.text.isNotEmpty()) {
+                            val syms = el.symbols.mapNotNull { s -> s.boundingBox?.let { RectF(it) } }
+                            wordChars.add(WordChars(el.text, RectF(ebb), syms))
+                        }
+                    }
+                }
+                runOnUiThread { selView.ocrLines = lineBoxes.map { RectF(selView.bmpToView(it)) } }
+            }.addOnFailureListener { tapOcrDone.incrementAndGet() }
+        }
     }
 
     // ---------- chrome (pill, bars, chips) ----------
@@ -612,7 +1139,7 @@ class SelectActivity : Activity() {
             val screenH = (showBar.parent as View).height
             val bw = showBar.width; val bh = showBar.height
             var x = (r.centerX() - bw / 2f).coerceIn(dp(10f).toFloat(), screenW - bw - dp(10f).toFloat())
-            var y = r.bottom + dp(10f)
+            var y = r.bottom + dp(if (showBar === textBar) 40f else 10f)  // text bar must clear the selection cursors (handles hang ~28dp below)
             if (y + bh > screenH - dp(16f)) y = r.top - bh - dp(56f) // flip above, under the pill
             showBar.translationX = x; showBar.translationY = y
             showBar.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(220).setStartDelay(40).setInterpolator(OvershootInterpolator(1.6f)).start()
@@ -827,9 +1354,6 @@ class SelectActivity : Activity() {
     }
 
     private fun runOcrForSearch(crop: Bitmap) {
-        val img = InputImage.fromBitmap(crop, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
         fun go(q: String) {
             if (q.isBlank()) { Toast.makeText(this, "No text to search", Toast.LENGTH_SHORT).show(); finish(); return }
             try {
@@ -841,14 +1365,9 @@ class SelectActivity : Activity() {
             }
             finish()
         }
-        latin.process(img).addOnSuccessListener { lr ->
-            deva.process(img).addOnSuccessListener { dr ->
-                go(if (dr.text.trim().length > lr.text.trim().length) dr.text.trim() else lr.text.trim())
-            }.addOnFailureListener { go(lr.text.trim()) }
-        }.addOnFailureListener {
-            deva.process(img).addOnSuccessListener { dr -> go(dr.text.trim()) }
-                .addOnFailureListener { Toast.makeText(this, "Read failed", Toast.LENGTH_SHORT).show(); finish() }
-        }
+        val fromScreen = textFromNodes()
+        if (fromScreen.isNotEmpty()) { go(fromScreen); return }
+        Ocr.recognize(this, crop) { txt, _ -> go(txt) }
     }
 
     private fun pinImage() {
@@ -865,27 +1384,137 @@ class SelectActivity : Activity() {
     private fun switchToTextMode() {
         bar.visibility = View.GONE
         textBar.visibility = View.VISIBLE
+        selView.textMode = true
+        selViewRect?.let { selView.setTextLines(linesInView(it)) }
         showChrome(true)
+        gifPill.visibility = View.GONE
+        selViewRect?.let { showTextChip(it) }
         readText()
+    }
+
+    /** CTS-style floating chip: dark capsule with Copy and Translate, above the highlight. */
+    private fun buildTextChip() {
+        textChip = LinearLayout(this)
+        textChip.orientation = LinearLayout.HORIZONTAL
+        textChip.gravity = Gravity.CENTER_VERTICAL
+        textChip.setBackgroundResource(R.drawable.toolbar_bg)
+        fun chipBtn(label: String, act: () -> Unit): TextView {
+            val tv = TextView(this)
+            tv.text = label
+            tv.setTextColor(Color.WHITE)
+            tv.textSize = 14.5f
+            tv.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            tv.setPadding(dp(16f), dp(9f), dp(16f), dp(9f))
+            tv.setOnClickListener { act() }
+            return tv
+        }
+        textChip.addView(chipBtn("Copy") { copyText() })
+        val div = View(this)
+        div.setBackgroundColor(Color.parseColor("#44FFFFFF"))
+        textChip.addView(div, LinearLayout.LayoutParams(dp(1f), dp(20f)))
+        textChip.addView(chipBtn("Translate") { translateText() })
+        textChip.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+        textChip.visibility = View.GONE
+    }
+
+    private fun showTextChip(r: RectF) {
+        textChip.visibility = View.VISIBLE
+        textChip.scaleX = 0.6f; textChip.scaleY = 0.6f; textChip.alpha = 0f
+        textChip.post {
+            val parent = textChip.parent as View
+            val cw = textChip.width; val ch = textChip.height
+            if (cw == 0 || ch == 0 || parent.width == 0) { textChip.post { showTextChip(r) }; return@post }
+            val x = (r.centerX() - cw / 2f).coerceIn(dp(10f).toFloat(), maxOf(dp(10f).toFloat(), parent.width - cw - dp(10f).toFloat()))
+            var y = r.top - ch - dp(10f)
+            if (y < dp(44f)) y = (r.bottom + dp(10f)).coerceAtMost((parent.height - ch - dp(10f)).toFloat())
+            textChip.translationX = x
+            textChip.translationY = y
+            textChip.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(220).setInterpolator(OvershootInterpolator(1.6f)).start()
+        }
     }
 
     private fun readText() {
         val c = cropBmp ?: return
-        Toast.makeText(this, "Reading text...", Toast.LENGTH_SHORT).show()
+        // character-level handle selection: exact substring from the OCR symbols -
+        // the nodes only know whole words, so they cannot supply partial words
+        val charText = textFromCharRanges()
+        if (charText != null) { finishOcr(charText); return }
+        // real text from the app itself first - exact Unicode, every language, zero OCR error
+        val fromScreen = textFromNodes()
+        if (fromScreen.isNotEmpty()) { finishOcr(fromScreen); return }
         runOcr(c)
     }
 
+    /** Exact characters between the handles for a character-level drag: each
+     *  range contributes its word's substring. Ranges join with a space on the
+     *  same line, a newline across lines. Null when the selection is word-level. */
+    private fun textFromCharRanges(): String? {
+        val ranges = selCharRanges ?: return null
+        if (ranges.isEmpty()) return null
+        val sb = StringBuilder()
+        for ((i, cr) in ranges.withIndex()) {
+            if (i > 0) {
+                val prev = ranges[i - 1]
+                val dy = kotlin.math.abs(cr.word.box.centerY() - prev.word.box.centerY())
+                val sameLine = dy < minOf(cr.word.box.height(), prev.word.box.height()) * 0.5f
+                sb.append(if (sameLine) " " else "\n")
+            }
+            val t = cr.word.text
+            val from = cr.fromChar.coerceIn(0, t.length)
+            val to = cr.toChar.coerceIn(from, t.length)
+            sb.append(t.substring(from, to))
+        }
+        return sb.toString().trim().ifEmpty { null }
+    }
+
+    /** Text of the on-screen nodes inside the current selection (dumped at capture time). */
+    private fun textFromNodes(): String {
+        val nodes = Shared.nodeTexts
+        if (nodes.isEmpty()) return ""
+        val range = selRangeBmp
+        val path = cropPathBmp
+        val hits: List<Pair<Rect, String>>
+        val inside: List<Pair<Rect, String>>
+        if (range != null) {
+            // handle-drag range: exactly the range words - a node belongs iff its
+            // center sits inside one of the range word boxes, not the union rect
+            inside = nodes.filter { n ->
+                val cx = n.first.centerX().toFloat(); val cy = n.first.centerY().toFloat()
+                range.any { it.contains(cx, cy) }
+            }
+            hits = inside
+        } else if (path != null) {
+            // circle-to-search: test nodes against the closed path, not the bounding rect
+            val pb = RectF(); path.computeBounds(pb, true)
+            val clip = Region(pb.left.toInt(), pb.top.toInt(), pb.right.toInt() + 1, pb.bottom.toInt() + 1)
+            val region = Region(); region.setPath(path, clip)
+            hits = nodes.filter { RectF.intersects(RectF(it.first), pb) }
+            inside = hits.filter { region.contains(it.first.centerX(), it.first.centerY()) }
+        } else {
+            val r = cropRectBmp ?: return ""
+            val sel = RectF(r)
+            hits = nodes.filter { RectF.intersects(RectF(it.first), sel) }
+            // nodes whose center sits inside the selection - avoids bleeding in neighbouring messages
+            inside = hits.filter { sel.contains(it.first.centerX().toFloat(), it.first.centerY().toFloat()) }
+        }
+        if (hits.isEmpty()) return ""
+        val use = if (inside.isNotEmpty()) inside else hits
+        return readingOrderOf(use) { RectF(it.first) }
+            .joinToString("\n") { it.second }.trim()
+    }
+
+    private var tessWarned = false
+
     private fun runOcr(crop: Bitmap) {
-        val img = InputImage.fromBitmap(crop, 0)
-        val latin = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-        val deva = TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build())
-        latin.process(img).addOnSuccessListener { lr ->
-            deva.process(img).addOnSuccessListener { dr ->
-                finishOcr(if (dr.text.trim().length > lr.text.trim().length) dr.text else lr.text)
-            }.addOnFailureListener { finishOcr(lr.text) }
-        }.addOnFailureListener {
-            deva.process(img).addOnSuccessListener { dr -> finishOcr(dr.text) }
-                .addOnFailureListener { Toast.makeText(this, "Read failed, try again", Toast.LENGTH_SHORT).show() }
+        Ocr.recognize(this, crop) { txt, tessOk ->
+            if (txt.isEmpty()) {
+                Toast.makeText(this, "Couldn't read text - try a tighter selection", Toast.LENGTH_SHORT).show()
+            } else if (!tessOk && !tessWarned) {
+                tessWarned = true
+                val why = Ocr.tessError ?: "still loading"
+                Toast.makeText(this, "Kannada/Hindi OCR not ready ($why)", Toast.LENGTH_LONG).show()
+            }
+            finishOcr(txt)
         }
     }
 
@@ -925,26 +1554,129 @@ class SelectActivity : Activity() {
         }
     }
 
+    /** Deterministic language detection from the Unicode script itself - ML Kit's
+     *  language-id returns "und" for short non-Latin lines, which silently
+     *  "translated" Kannada back to Kannada (the reported bug). */
+    private fun detectLangByScript(t: String): String? {
+        var kn = 0; var dev = 0; var ben = 0; var tam = 0; var tel = 0; var mal = 0
+        var guj = 0; var gur = 0; var arab = 0; var han = 0; var hang = 0; var kana = 0; var cyr = 0; var lat = 0
+        for (ch in t) when (ch.code) {
+            in 0x0C80..0x0CFF -> kn++
+            in 0x0900..0x097F -> dev++
+            in 0x0980..0x09FF -> ben++
+            in 0x0B80..0x0BFF -> tam++
+            in 0x0C00..0x0C7F -> tel++
+            in 0x0D00..0x0D7F -> mal++
+            in 0x0A80..0x0AFF -> guj++
+            in 0x0A00..0x0A7F -> gur++
+            in 0x0600..0x06FF -> arab++
+            in 0x4E00..0x9FFF -> han++
+            in 0xAC00..0xD7A3 -> hang++
+            in 0x3040..0x30FF -> kana++
+            in 0x0400..0x04FF -> cyr++
+            in 'a'.code..'z'.code, in 'A'.code..'Z'.code -> lat++
+        }
+        val m = mapOf("kn" to kn, "hi" to dev, "bn" to ben, "ta" to tam, "te" to tel,
+            "ml" to mal, "gu" to guj, "pa" to gur, "ar" to arab, "zh" to han,
+            "ko" to hang, "ja" to kana, "ru" to cyr)
+        val best = m.maxByOrNull { it.value }!!
+        if (best.value >= 2) return best.key
+        return null   // Latin or unclear: let ML Kit language-id decide
+    }
+
+    /** Download the translation packs he is most likely to need, in the background,
+     *  the moment AI Pro opens - the first real Translate then has no long wait. */
+    private fun warmTranslateModels() {
+        Thread {
+            for (pair in listOf(
+                TranslateLanguage.KANNADA to TranslateLanguage.ENGLISH,
+                TranslateLanguage.ENGLISH to TranslateLanguage.KANNADA,
+                TranslateLanguage.HINDI to TranslateLanguage.ENGLISH,
+                TranslateLanguage.ENGLISH to TranslateLanguage.HINDI)) {
+                try {
+                    val opts = TranslatorOptions.Builder().setSourceLanguage(pair.first).setTargetLanguage(pair.second).build()
+                    Translation.getClient(opts).downloadModelIfNeeded()
+                } catch (e: Exception) { }
+            }
+        }.start()
+    }
+
+    private var translateDlg: AlertDialog? = null
+    private fun translateStage(msg: String) { runOnUiThread { try { translateDlg?.setMessage(msg) } catch (e: Exception) { } } }
+
     private fun translateText() {
         val src = currentText
         if (src.isBlank()) { Toast.makeText(this, "Still reading - tap again in a second", Toast.LENGTH_SHORT).show(); return }
-        Toast.makeText(this, "Translating (first time downloads a small model)...", Toast.LENGTH_SHORT).show()
-        LanguageIdentification.getClient().identifyLanguage(src).addOnSuccessListener { lang ->
-            val fromEn = lang == "en"
-            val opts = TranslatorOptions.Builder()
-                .setSourceLanguage(if (fromEn) TranslateLanguage.ENGLISH else TranslateLanguage.HINDI)
-                .setTargetLanguage(if (fromEn) TranslateLanguage.HINDI else TranslateLanguage.ENGLISH)
-                .build()
-            val tr = Translation.getClient(opts)
-            tr.downloadModelIfNeeded().addOnSuccessListener {
-                tr.translate(src).addOnSuccessListener { out ->
-                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out))
-                    Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
-                    finish()
-                }.addOnFailureListener { Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show() }
-            }.addOnFailureListener { Toast.makeText(this, "Model download failed - check internet", Toast.LENGTH_SHORT).show() }
-        }.addOnFailureListener { Toast.makeText(this, "Language detect failed", Toast.LENGTH_SHORT).show() }
+        translateDlg = AlertDialog.Builder(this)
+            .setTitle("Translate")
+            .setMessage("Detecting language...")
+            .setCancelable(true)
+            .create()
+        translateDlg?.show()
+        val scriptLang = detectLangByScript(src)
+        val startTranslate: (String) -> Unit = { lang ->
+            val srcLang = TranslateLanguage.fromLanguageTag(lang)
+            if (srcLang == null) {
+                translateDlg?.dismiss()
+                Toast.makeText(this, "Translation not available for this language", Toast.LENGTH_SHORT).show()
+            } else {
+                val opts = TranslatorOptions.Builder()
+                    .setSourceLanguage(srcLang)
+                    .setTargetLanguage(if (srcLang == TranslateLanguage.ENGLISH) TranslateLanguage.HINDI else TranslateLanguage.ENGLISH)
+                    .build()
+                val tr = Translation.getClient(opts)
+                translateStage("Downloading the $lang translation model (one-time, can take a minute)...")
+                tr.downloadModelIfNeeded().addOnSuccessListener {
+                    translateStage("Translating...")
+                    tr.translate(src).addOnSuccessListener { out ->
+                        if (out.trim().equals(src.trim(), ignoreCase = true)) {
+                            // passthrough: model may have just landed - retry once before calling it a failure
+                            tr.translate(src).addOnSuccessListener { out2 ->
+                                translateDlg?.dismiss()
+                                if (out2.trim().equals(src.trim(), ignoreCase = true)) {
+                                    Toast.makeText(this, "Couldn't translate this text", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out2))
+                                    Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
+                                    finish()
+                                }
+                            }.addOnFailureListener {
+                                translateDlg?.dismiss()
+                                Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            translateDlg?.dismiss()
+                            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("AI Pro translation", out))
+                            Toast.makeText(this, "Translated - copied to clipboard", Toast.LENGTH_SHORT).show()
+                            finish()
+                        }
+                    }.addOnFailureListener {
+                        translateDlg?.dismiss()
+                        Toast.makeText(this, "Translate failed", Toast.LENGTH_SHORT).show()
+                    }
+                }.addOnFailureListener {
+                    translateDlg?.dismiss()
+                    Toast.makeText(this, "Model download failed - check internet (one-time ~30MB)", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        if (scriptLang != null) {
+            startTranslate(scriptLang)
+        } else {
+            LanguageIdentification.getClient().identifyLanguage(src)
+                .addOnSuccessListener { lang ->
+                    if (lang == "und") {
+                        translateDlg?.dismiss()
+                        Toast.makeText(this, "Couldn't detect the language", Toast.LENGTH_SHORT).show()
+                    } else startTranslate(lang)
+                }
+                .addOnFailureListener {
+                    translateDlg?.dismiss()
+                    Toast.makeText(this, "Language detect failed", Toast.LENGTH_SHORT).show()
+                }
+        }
     }
 
     private fun showMini(text: String) {
@@ -992,11 +1724,15 @@ class SelectActivity : Activity() {
 }
 
 class SelectionView(context: Context, private val bmp: Bitmap,
-                    private val onFreePick: (RectF) -> Unit,
+                    private val onFreePick: (RectF, Boolean, List<PointF>) -> Unit,
                     private val onTap: (Float, Float) -> Unit,
                     private val onDragStart: () -> Unit,
                     private val onResizeLive: (RectF) -> Unit,
-                    private val onResizeEnd: (RectF) -> Unit) : View(context) {
+                    private val onResizeEnd: (RectF) -> Unit,
+                    private val onCursorMove: (Int, Float, Float) -> Unit = { _, _, _ -> },
+                    private val onCursorEnd: (Int, Float, Float) -> Unit = { _, _, _ -> },
+                    private val onCursorDragStart: () -> Unit = {},
+                    private val onCancel: () -> Unit = {}) : View(context) {
 
     private var scale = 1f
     private var ox = 0f
@@ -1004,7 +1740,8 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     private var sx = -1f; private var sy = -1f; private var ex = -1f; private var ey = -1f
     private val dragPath = ArrayList<PointF>()
     private var pathLen = 0f
-    private var pathTurn = 0f
+    private var pathTurn = 0f    // absolute turn (kept for diagnostics; lasso uses pathNetTurn)
+    private var pathNetTurn = 0f // signed: jitter cancels, real circling accumulates
     private var lastAng = 0f
     private var isLasso = false
     var recordMode = false        // Create GIF prep: white corner brackets, no handles
@@ -1070,6 +1807,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     override fun onDetachedFromWindow() {
         anim?.cancel()
         pulseAnim?.cancel()
+        try { magnifier?.dismiss() } catch (_: Exception) {}
         super.onDetachedFromWindow()
     }
 
@@ -1110,7 +1848,64 @@ class SelectionView(context: Context, private val bmp: Bitmap,
     }
 
     fun viewToBmpPoint(x: Float, y: Float): PointF = PointF((x - ox) / scale, (y - oy) / scale)
+
+    /** Clamp a touch point to the bitmap bounds. */
+    private fun clampToBmp(x: Float, y: Float): PointF =
+        PointF(x.coerceIn(ox, ox + bmp.width * scale), y.coerceIn(oy, oy + bmp.height * scale))
     fun bmpToView(b: RectF): RectF = RectF(ox + b.left * scale, oy + b.top * scale, ox + b.right * scale, oy + b.bottom * scale)
+
+    // circle-to-search style text selection state
+    var textMode = false
+    private var textLinesList: List<RectF> = emptyList()
+    var ocrLines: List<RectF> = emptyList() // live drag feedback: every OCR line, view coords
+    private var textT = 1f
+    private var textAnim: ValueAnimator? = null
+    private val textHl = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; alpha = 70 }
+    private val tmpSrc = Rect()
+
+    /** Staggered left-to-right wipe-in of the per-line highlight (CTS confirm animation). */
+    fun setTextLines(lines: List<RectF>, animate: Boolean = true) {
+        // guard: a degenerate rect draws no highlight but its handle points
+        // still draw - dropping them keeps highlight and handles consistent
+        textLinesList = lines.filter { it.width() > 0.5f && it.height() > 0.5f }
+        textAnim?.cancel()
+        if (!animate) { textT = 1f; invalidate(); return }
+        if (textLinesList.isEmpty()) { textT = 1f; invalidate(); return }
+        textT = 0f
+        textAnim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = (300 + textLinesList.size * 60).coerceAtMost(900).toLong()
+            addUpdateListener { textT = it.animatedValue as Float; invalidate() }
+            start()
+        }
+        invalidate()
+    }
+
+    // selection cursors + magnifier loupe (Android-style, word-by-word adjustment)
+    private var cursorMode = 0   // 0 none, 1 start, 2 end
+    /** The dragged handle crossed the fixed end: it now drives the opposite handle. */
+    fun flipCursorMode() { cursorMode = if (cursorMode == 1) 2 else if (cursorMode == 2) 1 else cursorMode }
+    private var magnifier: Magnifier? = null
+    private val cursorFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA8B8FF.toInt(); style = Paint.Style.FILL }
+    private val cursorRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = dpF(2f) }
+    private val cursorStem = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA8B8FF.toInt(); style = Paint.Style.STROKE; strokeWidth = dpF(3f); strokeCap = Paint.Cap.ROUND }
+    private fun handleCenter(pt: PointF): PointF = PointF(pt.x, pt.y + dpF(19f))
+    private fun startHandlePt(): PointF? = textLinesList.firstOrNull()?.let { PointF(it.left, it.bottom) }
+    private fun endHandlePt(): PointF? = textLinesList.lastOrNull()?.let { PointF(it.right, it.bottom) }
+    private fun cursorDown(x: Float, y: Float): Boolean {
+        if (!textMode || confirmed == null || textLinesList.isEmpty()) return false
+        val hr = dpF(30f)
+        val sh = startHandlePt()?.let { handleCenter(it) }
+        val eh = endHandlePt()?.let { handleCenter(it) }
+        val hitEnd = eh != null && kotlin.math.abs(x - eh.x) <= hr && kotlin.math.abs(y - eh.y) <= hr
+        val hitStart = sh != null && kotlin.math.abs(x - sh.x) <= hr && kotlin.math.abs(y - sh.y) <= hr
+        if (!hitStart && !hitEnd) return false
+        cursorMode = if (hitEnd) 2 else 1
+        onCursorDragStart()   // hide bar/chip only: keep textMode + text lines while adjusting
+        invalidate()
+        return true
+    }
+
+    fun confirmedRect(): RectF? = confirmed
 
     fun setConfirmed(v: RectF) {
         confirmed = RectF(v); sx = -1f; resizeHandle = -1; insideDown = false
@@ -1160,13 +1955,30 @@ class SelectionView(context: Context, private val bmp: Bitmap,
             drawGlowSet(canvas, edgeRect, edgeRadius, edgeGlow2, edgeGlow1, edgeMain)
         }
 
-        val dragging = sx >= 0 && ex >= 0
+        // draw the drag preview only once the pointer actually moved: at DOWN ex==sx,
+        // so an untainted tap would flash a zero-size rect + corner brackets (a "+" mark)
+        // before ACTION_UP routes it to tapDetect
+        val dragging = sx >= 0 && ex >= 0 && (kotlin.math.abs(ex - sx) > 16 || kotlin.math.abs(ey - sy) > 16)
         if (dragging && !isLasso && dragPath.size > 1) {
             // faint live trail under the box preview: instant feedback that the path is seen
             tmpPath.reset()
             tmpPath.moveTo(dragPath[0].x, dragPath[0].y)
             for (pt in dragPath) tmpPath.lineTo(pt.x, pt.y)
             canvas.drawPath(tmpPath, dragBracket)
+        }
+        // Box vs trail (v6): the trail is instant feedback for every non-lasso
+        // drag. The box (and text light-up) appear only when the path is long
+        // AND straight: a circle of radius R turns pathLen/R radians, so at
+        // 200dp any real circle (R < ~650dp, i.e. anything that fits on screen)
+        // has turned past 0.3 rad and never gets a box. The lasso check runs on
+        // every MOVE and hides the box the instant circling is detected, so a
+        // big slow circle shows trail only until it is classified.
+        val boxReady = dragging && !isLasso && pathLen > dpF(200f) &&
+                kotlin.math.abs(pathNetTurn) < 0.3f
+        if (boxReady && ocrLines.isNotEmpty()) {
+            // CTS live feedback: text lines light up the moment the drag touches them
+            val dr = normRect()
+            for (ln in ocrLines) if (RectF.intersects(ln, dr)) canvas.drawRoundRect(ln, dpF(6f), dpF(6f), textHl)
         }
         if (dragging && isLasso && dragPath.size > 1) {
             // circle-to-search trail: pastel gradient along the drawn path
@@ -1180,11 +1992,49 @@ class SelectionView(context: Context, private val bmp: Bitmap,
             canvas.drawPath(tmpPath, selGlow1)
             canvas.drawPath(tmpPath, selMain)
         }
-        val sel = confirmed ?: if (dragging && !isLasso) normRect() else null
+        val sel = confirmed ?: if (boxReady) normRect() else null
         if (sel != null) {
-            canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
+            val textHlActive = confirmed != null && textMode && textLinesList.isNotEmpty()
+            if (!textHlActive) canvas.drawRoundRect(sel, selRadius, selRadius, bmpPaint)
             if (confirmed != null) {
-                if (recordMode) {
+                if (textHlActive) {
+                    // CTS text look: each line redraws crisp over the dim, then a white
+                    // translucent highlight wipes in left-to-right, staggered per line
+                    val n = textLinesList.size
+                    for ((i, ln) in textLinesList.withIndex()) {
+                        tmpSrc.set(
+                            ((ln.left - ox) / scale).toInt().coerceIn(0, bmp.width - 1),
+                            ((ln.top - oy) / scale).toInt().coerceIn(0, bmp.height - 1),
+                            ((ln.right - ox) / scale).toInt().coerceIn(1, bmp.width),
+                            ((ln.bottom - oy) / scale).toInt().coerceIn(1, bmp.height)
+                        )
+                        if (tmpSrc.right <= tmpSrc.left) tmpSrc.right = tmpSrc.left + 1
+                        if (tmpSrc.bottom <= tmpSrc.top) tmpSrc.bottom = tmpSrc.top + 1
+                        canvas.drawBitmap(bmp, tmpSrc, ln, bmpPaint)
+                        val f = (textT * (n * 0.18f + 1f) - i * 0.18f).coerceIn(0f, 1f)
+                        if (f > 0f) {
+                            canvas.save()
+                            canvas.clipRect(ln.left, ln.top, ln.left + ln.width() * f, ln.bottom)
+                            canvas.drawRoundRect(ln, dpF(6f), dpF(6f), textHl)
+                            canvas.restore()
+                        }
+                    }
+                    // adjustment cursors at both ends of the selection: the stem
+                    // spans the text line height so the cursor matches the text
+                    // size; the knob stays a fixed usable touch size
+                    val hr2 = dpF(9f)
+                    val firstLine = textLinesList.firstOrNull()
+                    val lastLine = textLinesList.lastOrNull()
+                    for ((pt, line) in listOfNotNull(
+                        startHandlePt()?.let { it to firstLine },
+                        endHandlePt()?.let { it to lastLine })) {
+                        val hc = handleCenter(pt)
+                        val stemTop = line?.top ?: (pt.y - dpF(4f))
+                        canvas.drawLine(pt.x, stemTop, pt.x, hc.y, cursorStem)
+                        canvas.drawCircle(hc.x, hc.y, hr2, cursorFill)
+                        canvas.drawCircle(hc.x, hc.y, hr2, cursorRing)
+                    }
+                } else if (recordMode) {
                     // Create GIF prep: plain white square-corner brackets, no gradient, no pulse
                     val arm = dpF(20f)
                     tmpPath.reset()
@@ -1262,6 +2112,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
         if (recordMode) return true   // frame is fixed while setting up / running a recording
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (cursorDown(e.x, e.y)) return true
                 val h = handleAt(e.x, e.y)
                 if (h >= 0) {
                     resizeHandle = h          // crop-style live resize; box + glow stay alive
@@ -1272,18 +2123,49 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     sx = e.x; sy = e.y; ex = e.x; ey = e.y
                     confirmed = null          // fresh drag outside: new selection
                     pulse = 1f
-                    dragPath.clear(); dragPath.add(PointF(e.x, e.y)); pathLen = 0f; pathTurn = 0f; lastAng = 0f; isLasso = false
+                    dragPath.clear(); dragPath.add(PointF(e.x, e.y)); pathLen = 0f; pathTurn = 0f; pathNetTurn = 0f; lastAng = 0f; isLasso = false
                     onDragStart()
                 }
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
+                if (cursorMode != 0) {
+                    if (magnifier == null) {
+                        // Loupe for handle drags: big enough for a word + neighbors
+                        // (180x72dp), modest 1.25x zoom. setSize takes pixels.
+                        magnifier = Magnifier.Builder(this)
+                            .setSize(dpF(180f).toInt(), dpF(72f).toInt())
+                            .setInitialZoom(1.25f)
+                            .build()
+                    }
+                    val cp = clampToBmp(e.x, e.y)
+                    // Source = the true finger point (view coords); never clamped
+                    // away from it. Popup = centered above the finger, clamped
+                    // inside the view; flips below the finger when there is no
+                    // room above. The handle stays at the finger, clear of the popup.
+                    val loupeW = dpF(180f); val loupeH = dpF(72f); val gap = dpF(16f)
+                    val fx = e.x; val fy = e.y
+                    val px = fx.coerceIn(loupeW / 2f, (width - loupeW / 2f).coerceAtLeast(loupeW / 2f))
+                    var py = fy - loupeH / 2f - gap
+                    if (py < loupeH / 2f) py = fy + loupeH / 2f + gap  // flip below
+                    py = py.coerceIn(loupeH / 2f, (height - loupeH / 2f).coerceAtLeast(loupeH / 2f))
+                    try {
+                        if (android.os.Build.VERSION.SDK_INT >= 29) magnifier?.show(fx, fy, px, py)
+                        else magnifier?.show(fx, fy)
+                    } catch (_: Exception) {}
+                    onCursorMove(cursorMode, cp.x, cp.y)
+                    invalidate()
+                    return true
+                }
                 if (resizeHandle >= 0) {
                     applyResize(e.x, e.y)
                     onResizeLive(RectF(confirmed!!))
                 } else if (!insideDown && sx >= 0) {
                     val lx = ex; val ly = ey
-                    ex = e.x; ey = e.y
+                    // keep the drag point inside the bitmap: the trail, the lasso
+                    // heuristics and the preview rect all stay in-bounds (the DOWN
+                    // point is intentionally left unclamped for hit-testing)
+                    val cl = clampToBmp(e.x, e.y); ex = cl.x; ey = cl.y
                     val seg = kotlin.math.hypot(ex - lx, ey - ly)
                     if (seg > dpF(2f)) {
                         dragPath.add(PointF(ex, ey)); pathLen += seg
@@ -1296,18 +2178,31 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                             while (d > Math.PI) d -= (2 * Math.PI).toFloat()
                             while (d < -Math.PI) d += (2 * Math.PI).toFloat()
                             pathTurn += kotlin.math.abs(d)
+                            pathNetTurn += d
                         }
                         lastAng = ang
                         if (!isLasso && dragPath.size > 8 && pathLen > dpF(100f)) {
                             val p0 = dragPath[0]
                             val closure = kotlin.math.hypot(ex - p0.x, ey - p0.y)
-                            if (closure < dpF(90f) || closure < pathLen * 0.22f || pathTurn > 3.6f) isLasso = true
+                            // lasso promotion: closure tests catch loops; the turn test
+                            // uses signed net turn (not absolute) so a straight drag
+                            // with jitter does not promote - the jitter cancels out,
+                            // while a real circle accumulates ~2*pi.
+                            if (closure < dpF(90f) || closure < pathLen * 0.22f || kotlin.math.abs(pathNetTurn) > 3.6f) isLasso = true
                         }
                     }
                 }
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
+                if (cursorMode != 0) {
+                    val cm = cursorMode; cursorMode = 0
+                    try { magnifier?.dismiss() } catch (_: Exception) {}
+                    val cp = clampToBmp(e.x, e.y)
+                    onCursorEnd(cm, cp.x, cp.y)
+                    invalidate()
+                    return true
+                }
                 if (resizeHandle >= 0) {
                     resizeHandle = -1
                     val r = RectF(confirmed!!)
@@ -1321,7 +2216,11 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     return true
                 }
                 ex = e.x; ey = e.y
+                run { val cl = clampToBmp(ex, ey); ex = cl.x; ey = cl.y }
                 if (isLasso && dragPath.size > 8) {
+                    // snapshot the closed path in bmp coords before the drag state is
+                    // cleared: word selection must test against the path, not its rect
+                    val pathBmp = dragPath.map { pt -> viewToBmpPoint(pt.x, pt.y) }
                     var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var rr = 0f; var bb = 0f
                     for (pt in dragPath) {
                         if (pt.x < l) l = pt.x; if (pt.y < t) t = pt.y
@@ -1332,7 +2231,7 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     rr = min(ox + bmp.width * scale, rr + lp); bb = min(oy + bmp.height * scale, bb + lp)
                     val lr = RectF(l, t, rr, bb)
                     sx = -1f; ex = -1f; isLasso = false; dragPath.clear(); invalidate()
-                    if (lr.width() > 30 && lr.height() > 30) onFreePick(lr)
+                    if (lr.width() > 30 && lr.height() > 30) onFreePick(lr, true, pathBmp)
                     return true
                 }
                 isLasso = false; dragPath.clear()
@@ -1342,10 +2241,28 @@ class SelectionView(context: Context, private val bmp: Bitmap,
                     sx = -1f; ex = -1f; invalidate()
                     onTap(e.x, e.y)
                 } else if (r.width() > 30 && r.height() > 30) {
-                    onFreePick(RectF(r))
+                    onFreePick(RectF(r), false, emptyList())
                 } else {
                     sx = -1f; ex = -1f; invalidate()
                 }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                // gesture aborted: clear the magnifier, reset the drag state.
+                // Only a cursor drag restores chrome: a fresh box/lasso drag hid
+                // it via hideChrome() (no cursor snapshot) and cleared the
+                // selection at drag start, so there is nothing to restore.
+                // The confirmed selection stays as it was.
+                try { magnifier?.dismiss() } catch (_: Exception) {}
+                magnifier = null
+                val wasCursor = cursorMode != 0
+                cursorMode = 0
+                sx = -1f; sy = -1f; ex = -1f; ey = -1f
+                isLasso = false; dragPath.clear()
+                pathLen = 0f; pathTurn = 0f; pathNetTurn = 0f; lastAng = 0f
+                resizeHandle = -1; insideDown = false
+                if (wasCursor) onCancel()
+                invalidate()
+                return true
             }
         }
         return true

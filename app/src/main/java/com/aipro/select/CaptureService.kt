@@ -14,6 +14,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.ImageView
 import android.widget.Toast
 import com.aipro.select.gif.AnimatedGifEncoder
@@ -31,6 +33,9 @@ class CaptureService : AccessibilityService() {
     override fun onServiceConnected() { instance = this }
 
     fun captureNow() {
+        // Grab the visible app's real text BEFORE our overlay opens - WhatsApp etc.
+        // expose exact Unicode text, so copy works in every language with zero OCR error.
+        Shared.nodeTexts = dumpNodeTexts()
         takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
                 val hw = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
@@ -51,6 +56,39 @@ class CaptureService : AccessibilityService() {
         })
     }
 
+    /** Text-bearing nodes (leaf TextViews etc.) with their screen bounds.
+     *  Walks the topmost application window that is NOT ours - our transparent
+     *  launch activity may briefly be the active root and it has no text. */
+    private fun dumpNodeTexts(): List<Pair<Rect, String>> {
+        val out = LinkedHashMap<String, Pair<Rect, String>>()
+        val root: AccessibilityNodeInfo = try {
+            val wins = windows
+            val target = wins?.firstOrNull { w ->
+                w.type == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                    try { w.root?.packageName?.toString() != packageName } catch (e: Exception) { false }
+            }
+            target?.root ?: rootInActiveWindow
+        } catch (e: Exception) { null } ?: return emptyList()
+        val stack = ArrayList<AccessibilityNodeInfo>()
+        stack.add(root)
+        val r = Rect()
+        while (stack.isNotEmpty()) {
+            val n = stack.removeAt(stack.size - 1)
+            try {
+                if (n.isVisibleToUser) {
+                    val t = n.text?.toString()?.trim()
+                    if (!t.isNullOrEmpty() && (n.childCount == 0 || n.className?.contains("TextView") == true)) {
+                        n.getBoundsInScreen(r)
+                        if (r.width() > 6 && r.height() > 6) out["${r.left},${r.top},${r.right},${r.bottom}|$t"] = Pair(Rect(r), t)
+                    }
+                    for (i in 0 until n.childCount) n.getChild(i)?.let { stack.add(it) }
+                }
+            } catch (e: Exception) { }
+            if (n !== root) try { n.recycle() } catch (e: Exception) { }
+        }
+        return out.values.toList()
+    }
+
     /** Capture after a delay - used after the launch activity exits, so the
      *  screenshot catches the underlying app, not our own window. */
     fun captureDelayed(ms: Long) {
@@ -66,31 +104,6 @@ class CaptureService : AccessibilityService() {
             }
             override fun onFailure(errorCode: Int) { cb(null) }
         })
-    }
-
-    /** Records the given on-screen region (physical pixel coords) into an animated GIF. */
-    fun captureGifBurst(rect: Rect, frames: Int, intervalMs: Long, done: (Boolean) -> Unit) {
-        val list = mutableListOf<Bitmap>()
-        var got = 0
-        fun step() {
-            shotOnce { b ->
-                if (b != null) {
-                    val l = rect.left.coerceIn(0, b.width - 2)
-                    val t = rect.top.coerceIn(0, b.height - 2)
-                    val r = rect.right.coerceIn(l + 2, b.width)
-                    val bo = rect.bottom.coerceIn(t + 2, b.height)
-                    var f = Bitmap.createBitmap(b, l, t, r - l, bo - t)
-                    if (f.width > 480) {
-                        val nh = f.height * 480 / f.width
-                        f = Bitmap.createScaledBitmap(f, 480, nh, true)
-                    }
-                    list.add(f)
-                    got++
-                }
-                if (got < frames) ui.postDelayed({ step() }, intervalMs) else encodeGif(list, intervalMs, done)
-            }
-        }
-        step()
     }
 
     /** Floating always-on-top image; drag to move, tap to close. */
