@@ -77,7 +77,7 @@ jobs:
           target: google_apis
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
-          script: bash -c "bash ci/smoke.sh; bash ci-assist2.sh | tee out/assist-log.txt"
+          script: bash -c "mkdir -p out; bash ci/smoke.sh || true; bash ci-assist2.sh 2>&1 | tee out/assist-log.txt"
         env:
           RG_CASES: "C1 C2 C6 C10 C11 C12"
       - name: v7a APK static evidence (not run)
@@ -99,10 +99,12 @@ jobs:
       - name: print screenshots as base64 jpeg
         if: always()
         run: |
+          ls -R ci/out | head -50
           python3 - <<'PY'
           import glob,base64,io
           from PIL import Image
-          files=sorted(glob.glob('ci/out/*.png'))+sorted(glob.glob('out/*.png'))
+          files=sorted(glob.glob('ci/out/**/*.png',recursive=True))+sorted(glob.glob('out/**/*.png',recursive=True))
+          print('FILES',files)
           for f in files:
               im=Image.open(f).convert('RGB'); w,h=im.size; im=im.resize((540,int(h*540/w)))
               b=io.BytesIO(); im.save(b,'JPEG',quality=55)
