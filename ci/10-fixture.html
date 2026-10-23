@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;background:#fff;color:#111;font-family:sans-serif}
+.r{position:absolute;left:0;height:100px}
+.w{position:absolute;top:30px;font-size:26px;white-space:nowrap}
+textarea{position:absolute;left:10px;top:640px;width:300px;height:80px;font-size:20px}</style></head><body>
+<script>
+var rows=[["alpha","bravo","charlie"],["delta","echo","foxtrot"],["golf","hotel","india"],["juliet","kilo","lima"],["mike","november","oscar"],["papa","quebec","romeo"]];
+rows.forEach(function(r,i){r.forEach(function(w,j){var d=document.createElement('div');d.className='w';d.style.top=(i*100+30)+'px';d.style.left=(20+j*130)+'px';d.textContent=w;document.body.appendChild(d);});});
+</script><textarea id="t"></textarea></body></html>
