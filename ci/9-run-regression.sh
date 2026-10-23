@@ -30,10 +30,10 @@ DPI=$(adb shell wm density | tr -d '\r' | grep -o '[0-9]*$' | tail -1)
 SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
 N=0
 page() { N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1; adb shell am start -a android.intent.action.VIEW -d "$URL?c=$N" >/dev/null; sleep 6; dismiss; ui; }
-overlay() { adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 9; dismiss; }
+overlay() { adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 15; dismiss; }
 # g ROW COL -> sets XL YM XR XC from the page dump taken by page()
 g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/u.xml $DPI $1 $2); }
-tapw() { g $1 $2; adb shell input tap $XC $YM; sleep 4; dismiss; }
+tapw() { g $1 $2; for k in 1 2 3 4; do adb shell input tap $XC $YM; sleep 5; dismiss; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
 # paste check: after Copy the overlay finishes and Chrome shows the page again
 paste_text() { sleep 2; ui; read TXL TYM TXR TXC < <(python3 - $DPI <<'PY'
 import re,sys
