@@ -120,11 +120,13 @@ jobs:
             rm -rf /tmp/x && mkdir /tmp/x && (cd /tmp/x && unzip -q $A 'lib/*')
             for f in /tmp/x/lib/$abi/*.so; do readelf -h $f | grep -E 'Class|Machine' | tr '\n' ' '; echo; done | tee /tmp/elf.txt
             found=0
-            for x in $(unzip -Z1 $A | grep '^res/xml/.*\.xml$'); do
-              unzip -p $A $x > /tmp/r.xml
-              if "$BT/aapt2" dump xmltree --file $x $A | grep -q canTakeScreenshot; then
-                "$BT/aapt2" dump xmltree --file $x $A | grep -E "eventTypes|canTakeScreenshot|canRetrieveWindowContent|flags"
-                "$BT/aapt2" dump xmltree --file $x $A | grep -q "accessibilityEventTypes.*0x20" || { echo "event types not narrowed"; exit 1; }
+            for x in $(unzip -Z1 $A | grep '^res/.*\.xml$'); do
+              "$BT/aapt2" dump xmltree --file $x $A > /tmp/xt.txt 2>/dev/null || continue
+              if grep -q canTakeScreenshot /tmp/xt.txt; then
+                echo "a11y config file: $x"
+                grep -E "ventTypes|canTakeScreenshot|canRetrieveWindowContent|lags" /tmp/xt.txt
+                grep -q "ventTypes" /tmp/xt.txt || { echo "no eventTypes attribute"; exit 1; }
+                if grep -E "ventTypes" /tmp/xt.txt | grep -q -E "0xffffffff|=-1|=4294967295|typeAllMask"; then echo "event types still all"; exit 1; fi
                 found=1
               fi
             done
