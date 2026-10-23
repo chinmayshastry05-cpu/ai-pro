@@ -4,7 +4,48 @@ on:
     branches: [ 'test/**' ]
   workflow_dispatch:
 jobs:
+  clean-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: overlay Muse v10 SelectActivity (hash checked), no test logging
+        run: |
+          F=$(find ci -name '*SelectActivity-v10.kt' | head -1)
+          echo "4e835c82f387b8c1363e659e1621c0ac53267e06f221403fc06ce21cb9488ab0  $F" | sha256sum -c -
+          cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
+          sed -i 's/versionName "0.8.8"/versionName "0.8.9-test3-unverified"/; s/versionCode 31/versionCode 33/' app/build.gradle
+          test "$(grep -c RGOBS app/src/main/java/com/aipro/select/SelectActivity.kt)" = "0"
+      - name: write release keystore from repo secrets (never printed)
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          SP: ${{ secrets.STORE_PASSWORD }}
+          KP: ${{ secrets.KEY_PASSWORD }}
+          KA: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set +x
+          D="$(dirname "$GITHUB_WORKSPACE")"
+          printf '%s' "$KS_B64" | base64 -d > "$D/aipro-release.jks"
+          { echo "storeFile=$D/aipro-release.jks"; echo "storePassword=$SP"; echo "keyAlias=$KA"; echo "keyPassword=$KP"; } > "$D/keystore.properties"
+      - name: build APK signed with the AI Pro release key
+        run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+      - name: record hashes
+        run: |
+          mkdir -p out; cp app/build/outputs/apk/debug/app-debug.apk out/AI-Pro-v0.8.9-test3-unverified.apk
+          sha256sum out/*.apk | tee out/sha256.txt
+          $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | tail -1)/apksigner verify --print-certs out/*.apk | tee out/cert.txt
+          grep -q 'certificate SHA-256 digest: ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06' out/cert.txt
+          sha256sum app/src/main/java/com/aipro/select/SelectActivity.kt | tee -a out/sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clean-candidate
+          path: out/
   smoke:
+    needs: clean-apk
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -14,11 +55,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
       - uses: actions/download-artifact@v4
-        with: { name: clean-candidate, path: dl, run-id: 39970931653, github-token: '${{ secrets.GITHUB_TOKEN }}' }
+        with: { name: clean-candidate, path: dl }
       - name: verify hash then place the exact candidate APK
         run: |
-          cd dl && sha256sum -c <(grep "AI-Pro-v0.8.9-test2-unverified.apk" sha256.txt | sed 's#out/##') && cd ..
-          mkdir -p app/build/outputs/apk/debug; cp dl/AI-Pro-v0.8.9-test2-unverified.apk app/build/outputs/apk/debug/app-debug.apk
+          cd dl && sha256sum -c <(grep "AI-Pro-v0.8.9-test3-unverified.apk" sha256.txt | sed 's#out/##') && cd ..
+          mkdir -p app/build/outputs/apk/debug; cp dl/AI-Pro-v0.8.9-test3-unverified.apk app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk
       - name: install pillow for screenshot diffs
         run: python3 -m pip install --user pillow
@@ -39,7 +80,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
           script: bash ci/smoke.sh
         env:
-          RG_CASES: "C1 C2 C6 C11 C12"
+          RG_CASES: "C1 C2 C6 C10 C11 C12"
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
