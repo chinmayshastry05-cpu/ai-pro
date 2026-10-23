@@ -18,7 +18,7 @@ jobs:
           F=$(find ci -name '*SelectActivity-v10.kt' | head -1)
           echo "4e835c82f387b8c1363e659e1621c0ac53267e06f221403fc06ce21cb9488ab0  $F" | sha256sum -c -
           cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
-          sed -i 's/versionName "0.8.8"/versionName "0.8.9-test3-unverified"/; s/versionCode 31/versionCode 33/' app/build.gradle
+          sed -i 's/versionName "0.8.8"/versionName "0.8.9"/; s/versionCode 31/versionCode 33/' app/build.gradle
           test "$(grep -c RGOBS app/src/main/java/com/aipro/select/SelectActivity.kt)" = "0"
       - name: write release keystore from repo secrets (never printed)
         env:
@@ -35,7 +35,7 @@ jobs:
         run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
       - name: record hashes
         run: |
-          mkdir -p out; cp app/build/outputs/apk/debug/app-debug.apk out/AI-Pro-v0.8.9-test3-unverified.apk
+          mkdir -p out; cp app/build/outputs/apk/debug/app-debug.apk out/AI-Pro-v0.8.9.apk
           sha256sum out/*.apk | tee out/sha256.txt
           $ANDROID_HOME/build-tools/$(ls $ANDROID_HOME/build-tools | tail -1)/apksigner verify --print-certs out/*.apk | tee out/cert.txt
           grep -q 'certificate SHA-256 digest: ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06' out/cert.txt
@@ -58,8 +58,8 @@ jobs:
         with: { name: clean-candidate, path: dl }
       - name: verify hash then place the exact candidate APK
         run: |
-          cd dl && sha256sum -c <(grep "AI-Pro-v0.8.9-test3-unverified.apk" sha256.txt | sed 's#out/##') && cd ..
-          mkdir -p app/build/outputs/apk/debug; cp dl/AI-Pro-v0.8.9-test3-unverified.apk app/build/outputs/apk/debug/app-debug.apk
+          cd dl && sha256sum -c <(grep "AI-Pro-v0.8.9.apk" sha256.txt | sed 's#out/##') && cd ..
+          mkdir -p app/build/outputs/apk/debug; cp dl/AI-Pro-v0.8.9.apk app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk
       - name: install pillow for screenshot diffs
         run: python3 -m pip install --user pillow
