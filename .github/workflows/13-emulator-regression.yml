@@ -41,7 +41,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
           script: bash $(ls ci/*run-regression.sh)
         env:
-          RG_CASES: "C3 C4 C5 C8 C9"
+          RG_CASES: "C3 C4 C5 C6 C8 C9"
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
