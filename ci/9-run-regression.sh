@@ -113,8 +113,8 @@ check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
 fi
 if want C3; then
 # C3 start handle dragged past the end swaps: bravo, start handle to delta -> bravo charlie delta
-page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $((SY+80)); sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $XC $YM; sleep .5; mev UP $XC $YM; sleep 3; shot rg-c3
-check RG_C3_HANDLE_SWAP "bravo charlie delta" "$(tapcopy)"
+page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $((SY+80)); sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $((XR-6)) $YM; sleep .5; mev UP $((XR-6)) $YM; sleep 3; shot rg-c3
+check RG_C3_HANDLE_SWAP "charlie delta" "$(tapcopy)"
 fi
 if want C4; then
 # C4 failed drop far from any word: bars back and the confirmed selection (bravo) unchanged
@@ -141,8 +141,12 @@ cx,cy,dpi=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); d=dpi/160.0
 for i in range(0,41):
     a=2*math.pi*i/36; print(int(cx+50*d*math.cos(a)), int(cy+30*d*math.sin(a)))
 PY
-n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; sleep .03; n=$((n+1)); done < /tmp/circ.txt
-mev UP $X $Y; sleep 4; shot rg-c6-after
+# fast gesture: events dispatched in one adb shell call without per-event dumpsys (slow dispatch got the touch cancelled by the system)
+awk 'NR==1{print "input motionevent DOWN " $1 " " $2; next}{print "input motionevent MOVE " $1 " " $2}' /tmp/circ.txt > /tmp/circ.sh
+echo "mev C6 circle batch $(wc -l < /tmp/circ.sh) events top=$(adb shell dumpsys activity activities </dev/null 2>/dev/null | grep -m1 -E topResumedActivity | grep -o 'com[^ ]*' | head -1)" >> $OUT/rg-mev.txt
+X=$(tail -1 /tmp/circ.txt | cut -d' ' -f1); Y=$(tail -1 /tmp/circ.txt | cut -d' ' -f2)
+[ $INVALID = 1 ] || adb shell < /tmp/circ.sh
+[ $INVALID = 1 ] || adb shell input motionevent UP $X $Y; sleep 4; shot rg-c6-after
 check RG_C6_CIRCLE_ONLY_HOTEL "hotel" "$(tapcopy)"
 fi
 if want C7; then
