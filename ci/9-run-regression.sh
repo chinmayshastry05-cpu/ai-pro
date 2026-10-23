@@ -30,10 +30,13 @@ adb shell settings put secure accessibility_enabled 1
 DPI=$(adb shell wm density | tr -d '\r' | grep -o '[0-9]*$' | tail -1)
 SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
 N=0
-page() { N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1; adb shell am start -a android.intent.action.VIEW -d "$URL?c=$N" >/dev/null; sleep 6; dismiss; ui; }
+page() { local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1
+  for k in 1 2 3 4 5 6; do adb shell am start -a android.intent.action.VIEW -d "$u?c=$N" >/dev/null; sleep 8; dismiss; ui
+    if grep -q "$mark" /tmp/u.xml; then break; fi; echo "page retry $k ($u)" >> $OUT/rg-notes.txt; done
+  cp /tmp/u.xml /tmp/page.xml; }
 overlay() { adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 15; dismiss; }
 # g ROW COL -> sets XL YM XR XC from the page dump taken by page()
-g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/u.xml $DPI $1 $2); }
+g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; }
 tapw() { g $1 $2; for k in 1 2 3 4; do adb shell input tap $XC $YM; sleep 5; dismiss; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
 # paste check: after Copy the overlay finishes and Chrome shows the page again
 paste_text() { sleep 2; ui; read TXL TYM TXR TXC < <(python3 - $DPI <<'PY'
@@ -56,7 +59,7 @@ check() { # name expected actual
 
 if want C0; then
 # C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
-N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1; adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html" >/dev/null; sleep 8; dismiss; ui
+page "http://10.0.2.2:8901/testpage.html" "quick brown"
 overlay; for k in 1 2 3; do adb shell input tap $((W*30/100)) $((H*19/100)); sleep 5; dismiss; if has Copy; then break; fi; done; shot rg-c0
 if has Copy; then verdict "RG_C0_CONTROL_TESTPAGE_TAP=PASS"; else verdict "RG_C0_CONTROL_TESTPAGE_TAP=FAIL"; fi
 fi
