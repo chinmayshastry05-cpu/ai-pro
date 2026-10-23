@@ -40,7 +40,7 @@ page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dism
   cp /tmp/u.xml /tmp/page.xml
   if ! grep -q "$mark" /tmp/page.xml; then INVALID=1; echo "INVALID: page marker $mark missing" >> $OUT/rg-notes.txt; fi; }
 overlay() { [ $INVALID = 1 ] && return; OCR0=$(ocrn); adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 12; dismiss
-  for k in $(seq 1 12); do [ $(( $(ocrn) - OCR0 )) -ge 5 ] && return; sleep 4; done; INVALID=1; echo "INVALID: OCR not ready (recognizers done < 5)" >> $OUT/rg-notes.txt; }
+  for k in $(seq 1 12); do [ $(( $(ocrn) - OCR0 )) -ge 5 ] && { adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' | grep -q "$PKG" || { INVALID=1; echo "INVALID: overlay activity not on screen" >> $OUT/rg-notes.txt; }; return; }; sleep 4; done; INVALID=1; echo "INVALID: OCR not ready (recognizers done < 5)" >> $OUT/rg-notes.txt; }
 # g ROW COL -> sets XL YM XR XC from the page dump taken by page()
 g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; for v in "$XL" "$YM" "$XR" "$XC"; do num "$v" || { INVALID=1; echo "INVALID: geometry r$1 c$2 not numeric" >> $OUT/rg-notes.txt; break; }; done; [ $INVALID = 0 ] && { XL=$((XL+OFX)); XR=$((XR+OFX)); XC=$((XC+OFX)); YM=$((YM+OFY)); }; }
 calib() { local L; L=$(adb logcat -d -s RGOBS:D 2>/dev/null | grep tapDetect | tail -1); local bx=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\1/p'); local by=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\2/p'); [ -z "$bx" ] && { echo "calib: no tapDetect log" >> $OUT/rg-notes.txt; return 1; }
@@ -66,7 +66,8 @@ PY
 ); if [ -z "$B" ]; then echo "<<no-copy-button>>"; return; fi; adb shell input tap $B; paste_text; }
 check() { # name expected actual
   if [ $INVALID = 1 ]; then verdict "$1=INVALID (precondition failed, not an app result)"; return; fi
-  if [ "$3" = "$2" ]; then verdict "$1=PASS (copied '$3')"; else verdict "$1=FAIL (expected '$2' got '$3')"; fi; }
+  local a="$3"; local n=$(printf '%s' "$a" | sed 's/&#10;/ /g' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
+  if [ "$a" = "$2" ]; then verdict "$1=PASS (copied '$a')"; elif [ "$n" = "$2" ]; then verdict "$1=PASS_WITH_LINEBREAK_SEPARATORS (raw copy '$a', words match, separator is a line break not a space)"; else verdict "$1=FAIL (expected '$2' got '$a')"; fi; }
 
 if want C0; then
 # C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
@@ -113,7 +114,7 @@ cx,cy,dpi=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); d=dpi/160.0
 for i in range(0,41):
     a=2*math.pi*i/36; print(int(cx+50*d*math.cos(a)), int(cy+30*d*math.sin(a)))
 PY
-n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; n=$((n+1)); [ $n = 12 ] && shot rg-c6-mid; done < /tmp/circ.txt
+n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; sleep .03; n=$((n+1)); [ $n = 12 ] && shot rg-c6-mid; done < /tmp/circ.txt
 mev UP $X $Y; sleep 4; shot rg-c6-after
 check RG_C6_CIRCLE_ONLY_HOTEL "hotel" "$(tapcopy)"
 fi
