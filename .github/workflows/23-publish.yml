@@ -33,7 +33,7 @@ jobs:
           git commit -q -m "0.8.9 hardened beta 1 (arm64) source: release build, window-change events only, 24h capture cache cleanup"
           git diff --stat 150285ca42d40d9dbe046aa76033def21e34d142 HEAD
           git diff --exit-code origin/beta/final-src HEAD -- . ':(exclude)app/build' && echo ARM_SOURCE_EQUALS_BUILT_SOURCE
-          git push origin beta/pub-src
+          git push --force origin beta/pub-src
           git checkout -q -b beta/pub-v7a-src
           git diff origin/beta/final-src origin/beta/final-v7a-src -- . ':(exclude)app/build' > /tmp/v7a.patch
           git apply /tmp/v7a.patch
@@ -41,7 +41,7 @@ jobs:
           git commit -q -m "0.8.9 hardened beta 1 (32-bit) source: ABI filter and version only"
           git diff --exit-code origin/beta/final-v7a-src HEAD -- . ':(exclude)app/build' && echo V7A_SOURCE_EQUALS_BUILT_SOURCE
           git diff --stat beta/pub-src HEAD
-          git push origin beta/pub-v7a-src
+          git push --force origin beta/pub-v7a-src
       - name: snapshot v0.8.9 release before
         run: |
           set -e
@@ -60,7 +60,7 @@ jobs:
           ls -l dl
           test "$(sha256sum dl/AI-Pro-v0.8.9-hardened-beta1.apk | cut -d' ' -f1)" = "$ARM_SHA"
           test "$(sha256sum dl/AI-Pro-v0.8.9-hardened-v7a-beta1.apk | cut -d' ' -f1)" = "$V7A_SHA"
-          test "$(ls dl | wc -l)" = "2"
+          test "$(ls dl/*.apk | wc -l)" = "2"
           BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
           for f in dl/*.apk; do "$BT/apksigner" verify --print-certs $f | grep -q "$CERT"; done
           echo ARTIFACTS_VERIFIED
