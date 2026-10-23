@@ -1,0 +1,81 @@
+name: publish-0-8-9
+on:
+  push:
+    branches: [ 'test/muse-v7' ]
+    paths: [ '.github/workflows/14-publish.yml' ]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, path: src }
+      - uses: actions/download-artifact@v4
+        with:
+          name: clean-candidate
+          path: dl
+          run-id: 39977507952
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: verify the accepted APK and source hashes
+        run: |
+          set -e
+          echo "e2c975c181e914d1c0fa15145809467ff5163e11d8f54a1d13288edb74360d6b  dl/AI-Pro-v0.8.9.apk" | sha256sum -c -
+          echo "4e835c82f387b8c1363e659e1621c0ac53267e06f221403fc06ce21cb9488ab0  src/ci/SelectActivity-v10.kt" | sha256sum -c -
+          ! git -C src ls-remote --exit-code --tags origin v0.8.9 >/dev/null 2>&1 || { echo "tag v0.8.9 already exists"; exit 1; }
+      - name: assemble the 0.8.9 source tree on top of main
+        run: |
+          set -e
+          cd src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TESTHEAD=$(git rev-parse HEAD)
+          git fetch origin main ci-test
+          git checkout -q -B pub origin/main
+          git checkout origin/ci-test -- app/build.gradle app/src/main/java/com/aipro/select/CaptureService.kt app/src/main/java/com/aipro/select/Ocr.kt app/src/main/java/com/aipro/select/Shared.kt settings.gradle build.gradle app/src/main/assets/tessdata
+          git show $TESTHEAD:ci/SelectActivity-v10.kt > app/src/main/java/com/aipro/select/SelectActivity.kt
+          sed -i 's/versionName "0.8.8"/versionName "0.8.9"/; s/versionCode 31/versionCode 33/' app/build.gradle
+          grep -n 'versionName "0.8.9"\|versionCode 33' app/build.gradle
+          # the tree must match exactly what CI built and tested (same sources, same build files)
+          mkdir -p /tmp/ref && git archive $TESTHEAD app/src app/build.gradle settings.gradle build.gradle | tar -x -C /tmp/ref
+          sed -i 's/versionName "0.8.8"/versionName "0.8.9"/; s/versionCode 31/versionCode 33/' /tmp/ref/app/build.gradle
+          git show $TESTHEAD:ci/SelectActivity-v10.kt > /tmp/ref/app/src/main/java/com/aipro/select/SelectActivity.kt
+          diff -r /tmp/ref/app/src app/src && diff /tmp/ref/app/build.gradle app/build.gradle && diff /tmp/ref/settings.gradle settings.gradle && diff /tmp/ref/build.gradle build.gradle
+          echo "tree equals the CI-tested sources"
+          git add -A app settings.gradle build.gradle
+          git status --short | head -30
+          git diff --cached --stat | tail -3
+      - name: commit, push main, tag, release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd src
+          git commit -q -F - <<'MSG'
+          AI Pro 0.8.9 (versionCode 33): word-level selection handles, zoom popup, circle selection fixes
+
+          Selection code by Muse (muse.ai), integrated and tested by Instinct on a CI emulator.
+          SelectActivity.kt sha256 4e835c82f387b8c1363e659e1621c0ac53267e06f221403fc06ce21cb9488ab0.
+          Not tested on a physical device. Signed with a new release key, so it does not update
+          the 0.8.8 build in place.
+          MSG
+          git push origin pub:main
+          git tag -a v0.8.9 -m "AI Pro 0.8.9"
+          git push origin v0.8.9
+          cat > /tmp/notes.md <<'MSG'
+          AI Pro 0.8.9 (versionCode 33).
+
+          - Word-level adjustable handles, digit-level handles in numbers, zoom popup while dragging a handle
+          - Circle selects only the intended region; rectangle handles sit at the first and last word
+          - Shaky straight drags stay rectangles instead of turning into a circle
+          - Old options bar behavior kept
+
+          Checked on a CI emulator, not on a physical device.
+          Signed with a new release key: it cannot update 0.8.8 or earlier test builds in place. Future builds use the same key.
+
+          APK sha256: e2c975c181e914d1c0fa15145809467ff5163e11d8f54a1d13288edb74360d6b
+          Signing certificate sha256: ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06
+          MSG
+          gh release create v0.8.9 ../dl/AI-Pro-v0.8.9.apk --repo "$GITHUB_REPOSITORY" --title "AI Pro 0.8.9" --notes-file /tmp/notes.md --verify-tag
+          gh release view v0.8.9 --repo "$GITHUB_REPOSITORY" --json url,assets -q '.url, (.assets[]|.name+" "+(.size|tostring))'
