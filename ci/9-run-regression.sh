@@ -31,7 +31,7 @@ adb shell settings put secure enabled_accessibility_services $PKG/$PKG.CaptureSe
 adb shell settings put secure accessibility_enabled 1
 DPI=$(adb shell wm density | tr -d '\r' | grep -o '[0-9]*$' | tail -1)
 SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
-N=0; INVALID=0; OCR0=0; OFX=0; OFY=0; TPX=0; TPY=0
+KX=1; DX=0; KY=1; DY=0; N=0; INVALID=0; OCR0=0; OFX=0; OFY=0; TPX=0; TPY=0
 ocrn() { adb logcat -d -s RGOBS:D 2>/dev/null | grep -c "ocr done"; }
 num() { [[ "$1" =~ ^[0-9]+$ ]]; }
 page() { INVALID=0; OFX=0; OFY=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dismiss; adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
@@ -39,10 +39,27 @@ page() { INVALID=0; OFX=0; OFY=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=
     if grep -q "$mark" /tmp/u.xml; then break; fi; echo "page retry $k ($u)" >> $OUT/rg-notes.txt; done
   cp /tmp/u.xml /tmp/page.xml
   if ! grep -q "$mark" /tmp/page.xml; then INVALID=1; echo "INVALID: page marker $mark missing" >> $OUT/rg-notes.txt; fi; }
-overlay() { [ $INVALID = 1 ] && return; OCR0=$(ocrn); adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 12; dismiss
+calib2() { [ $INVALID = 1 ] && return; local n0=$(adb logcat -d -s RGOBS:D | grep -c tapDetect)
+  local AX=$((W*80/100)) AY=$((H*30/100)) BX=$((W*25/100)) BY=$((H*70/100))
+  adb shell input tap $AX $AY </dev/null; sleep 3; adb shell input tap $BX $BY </dev/null; sleep 3
+  adb logcat -d -s RGOBS:D | grep tapDetect | tail -n +$((n0+1)) > /tmp/cal.txt
+  read KX DX KY DY OKC < <(python3 - $AX $AY $BX $BY <<'PY2'
+import re,sys
+ax,ay,bx,by=map(float,sys.argv[1:5]); L=[re.search(r'bmp=([0-9.]+),([0-9.]+)',l) for l in open('/tmp/cal.txt')]; L=[m for m in L if m]
+if len(L)<2: print(1,0,1,0,0); sys.exit()
+a,b=L[-2],L[-1]; abx,aby=float(a.group(1)),float(a.group(2)); bbx,bby=float(b.group(1)),float(b.group(2))
+kx=(abx-bbx)/(ax-bx); ky=(aby-bby)/(ay-by); print(round(kx,5),round(abx-kx*ax,2),round(ky,5),round(aby-ky*ay,2),1)
+PY2
+)
+  echo "calib2: screen->bitmap kx=$KX dx=$DX ky=$KY dy=$DY ok=$OKC from taps ($AX,$AY) ($BX,$BY)" >> $OUT/rg-notes.txt
+  if [ "$OKC" != 1 ] || python3 -c "import sys; sys.exit(0 if 0.7<$KX<1.4 and 0.7<$KY<1.4 else 1)" 2>/dev/null; then :; fi
+  [ "$OKC" = 1 ] || { INVALID=1; echo "INVALID: transform calibration taps not logged" >> $OUT/rg-notes.txt; }
+}
+overlay0() { [ $INVALID = 1 ] && return; OCR0=$(ocrn); adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 12; dismiss
   for k in $(seq 1 12); do [ $(( $(ocrn) - OCR0 )) -ge 5 ] && { adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' | grep -q "$PKG" || { INVALID=1; echo "INVALID: overlay activity not on screen" >> $OUT/rg-notes.txt; }; return; }; sleep 4; done; INVALID=1; echo "INVALID: OCR not ready (recognizers done < 5)" >> $OUT/rg-notes.txt; }
+overlay() { overlay0; calib2; }
 # g ROW COL -> sets XL YM XR XC from the page dump taken by page()
-g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; for v in "$XL" "$YM" "$XR" "$XC"; do num "$v" || { INVALID=1; echo "INVALID: geometry r$1 c$2 not numeric" >> $OUT/rg-notes.txt; break; }; done; [ $INVALID = 0 ] && { XL=$((XL+OFX)); XR=$((XR+OFX)); XC=$((XC+OFX)); YM=$((YM+OFY)); }; }
+g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; for v in "$XL" "$YM" "$XR" "$XC"; do num "$v" || { INVALID=1; echo "INVALID: geometry r$1 c$2 not numeric" >> $OUT/rg-notes.txt; break; }; done; [ $INVALID = 0 ] && { read XL XR XC YM < <(python3 -c "kx,dx,ky,dy=$KX,$DX,$KY,$DY; f=lambda v,k,d:int(round((v-d)/k)); print(f($XL,kx,dx),f($XR,kx,dx),f($XC,kx,dx),f($YM,ky,dy))"); echo "  mapped screen coords: $XL $YM $XR $XC (k=$KX,$KY d=$DX,$DY)" >> $OUT/rg-notes.txt; }; }
 calib() { local L; L=$(adb logcat -d -s RGOBS:D 2>/dev/null | grep tapDetect | tail -1); local bx=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\1/p'); local by=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\2/p'); [ -z "$bx" ] && { echo "calib: no tapDetect log" >> $OUT/rg-notes.txt; return 1; }
   local dx=$(python3 -c "print(int(round($TPX-$bx)))"); local dy=$(python3 -c "print(int(round($TPY-$by)))")
   echo "calib: tapped screen $TPX,$TPY -> bmp $bx,$by ; applying offset $dx,$dy (screen to overlay bitmap mismatch observed on this device)" >> $OUT/rg-notes.txt
