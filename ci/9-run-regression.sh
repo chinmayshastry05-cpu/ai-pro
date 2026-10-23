@@ -31,7 +31,7 @@ adb shell settings put secure enabled_accessibility_services $PKG/$PKG.CaptureSe
 adb shell settings put secure accessibility_enabled 1
 DPI=$(adb shell wm density | tr -d '\r' | grep -o '[0-9]*$' | tail -1)
 SIZE=$(adb shell wm size | tr -d '\r' | awk '{print $3}' | tail -1); W=${SIZE%x*}; H=${SIZE#*x}
-N=0; INVALID=0; OCR0=0
+N=0; INVALID=0; OCR0=0; OFX=0; OFY=0; TPX=0; TPY=0
 ocrn() { adb logcat -d -s RGOBS:D 2>/dev/null | grep -c "ocr done"; }
 num() { [[ "$1" =~ ^[0-9]+$ ]]; }
 page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dismiss; adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
@@ -42,8 +42,12 @@ page() { INVALID=0; local u=${1:-$URL}; local mark=${2:-alpha}; N=$((N+1)); dism
 overlay() { [ $INVALID = 1 ] && return; OCR0=$(ocrn); adb shell am start -n $PKG/.MainActivity >/dev/null; sleep 12; dismiss
   for k in $(seq 1 12); do [ $(( $(ocrn) - OCR0 )) -ge 5 ] && return; sleep 4; done; INVALID=1; echo "INVALID: OCR not ready (recognizers done < 5)" >> $OUT/rg-notes.txt; }
 # g ROW COL -> sets XL YM XR XC from the page dump taken by page()
-g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; for v in "$XL" "$YM" "$XR" "$XC"; do num "$v" || { INVALID=1; echo "INVALID: geometry r$1 c$2 not numeric" >> $OUT/rg-notes.txt; break; }; done; }
-tapw() { g $1 $2; [ $INVALID = 1 ] && return; for k in 1 2 3 4; do adb shell input tap $XC $YM; sleep 5; dismiss; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
+g() { read XL YM XR XC < <(python3 $(ls ci/*geom.py) /tmp/page.xml $DPI $1 $2); echo "geom r$1 c$2: $XL $YM $XR $XC dpi=$DPI" >> $OUT/rg-notes.txt; for v in "$XL" "$YM" "$XR" "$XC"; do num "$v" || { INVALID=1; echo "INVALID: geometry r$1 c$2 not numeric" >> $OUT/rg-notes.txt; break; }; done; [ $INVALID = 0 ] && { XL=$((XL+OFX)); XR=$((XR+OFX)); XC=$((XC+OFX)); YM=$((YM+OFY)); }; }
+calib() { local L; L=$(adb logcat -d -s RGOBS:D 2>/dev/null | grep tapDetect | tail -1); local bx=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\1/p'); local by=$(echo "$L" | sed -n 's/.* bmp=\([0-9.]*\),\([0-9.]*\) .*/\2/p'); [ -z "$bx" ] && { echo "calib: no tapDetect log" >> $OUT/rg-notes.txt; return 1; }
+  local dx=$(python3 -c "print(int(round($TPX-$bx)))"); local dy=$(python3 -c "print(int(round($TPY-$by)))")
+  echo "calib: tapped screen $TPX,$TPY -> bmp $bx,$by ; applying offset $dx,$dy (screen to overlay bitmap mismatch observed on this device)" >> $OUT/rg-notes.txt
+  if [ ${dx#-} -lt 300 ] && [ ${dy#-} -lt 300 ]; then OFX=$((OFX+dx)); OFY=$((OFY+dy)); return 0; fi; return 1; }
+tapw() { g $1 $2; [ $INVALID = 1 ] && return; for k in 1 2 3 4; do TPX=$XC; TPY=$YM; adb shell input tap $XC $YM; sleep 5; dismiss; if has Copy; then break; fi; echo "tap retry $k (no Copy yet)" >> $OUT/rg-notes.txt; if [ $OFX = 0 ] && [ $OFY = 0 ] && calib; then g $1 $2; fi; done; adb shell uiautomator dump /sdcard/dbg.xml >/dev/null 2>&1; adb pull /sdcard/dbg.xml $OUT/dbg-$N.xml >/dev/null 2>&1; }
 # paste check: after Copy the overlay finishes and Chrome shows the page again
 paste_text() { sleep 2; ui; read TXL TYM TXR TXC < <(python3 - $DPI <<'PY'
 import re,sys
