@@ -3,6 +3,7 @@
 # tap and a paste into the page textarea, so the assertion is on the real copied text.
 OUT=ci/out; mkdir -p $OUT; PKG=com.aipro.select; URL="http://10.0.2.2:8901/$(basename $(ls ci/*fixture.html))"
 V=$OUT/rg-verdicts.txt; : > $V
+want() { [ -z "$RG_CASES" ] || [[ " $RG_CASES " == *" $1 "* ]]; }
 verdict() { echo "$1" | tee -a $V; }
 ui() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1; }
 has() { ui; grep -q "text=\"$1\"" /tmp/u.xml; }
@@ -53,23 +54,34 @@ PY
 check() { # name expected actual
   if [ "$3" = "$2" ]; then verdict "$1=PASS (copied '$3')"; else verdict "$1=FAIL (expected '$2' got '$3')"; fi; }
 
+if want C0; then
 # C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
 N=$((N+1)); adb shell input keyevent 4 >/dev/null 2>&1; adb shell am start -a android.intent.action.VIEW -d "http://10.0.2.2:8901/testpage.html" >/dev/null; sleep 8; dismiss; ui
 overlay; for k in 1 2 3; do adb shell input tap $((W*30/100)) $((H*19/100)); sleep 5; dismiss; if has Copy; then break; fi; done; shot rg-c0
 if has Copy; then verdict "RG_C0_CONTROL_TESTPAGE_TAP=PASS"; else verdict "RG_C0_CONTROL_TESTPAGE_TAP=FAIL"; fi
+fi
+if want C1; then
 # C1 tap selects one word
 page; overlay; tapw 0 1; shot rg-c1; check RG_C1_TAP_WORD "bravo" "$(tapcopy)"
+fi
+if want C2; then
 # C2 end handle drag extends the range alpha..charlie
 page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $XC $YM; sleep .5; shot rg-c2-mid; mev UP $XC $YM; sleep 3; shot rg-c2
 check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
+fi
+if want C3; then
 # C3 start handle dragged past the end swaps: bravo, start handle to delta -> bravo charlie delta
 page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $SY; sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $XC $YM; sleep .5; mev UP $XC $YM; sleep 3; shot rg-c3
 check RG_C3_HANDLE_SWAP "bravo charlie delta" "$(tapcopy)"
+fi
+if want C4; then
 # C4 failed drop far from any word: bars back and the confirmed selection (bravo) unchanged
 page; overlay; tapw 0 1; g 0 1; HX=$XR; HY=$YM; shot rg-c4-before
 mev DOWN $HX $HY; sleep .3; mev MOVE $HX $((H*80/100)); sleep .3; mev UP $HX $((H*80/100)); sleep 3; shot rg-c4-after
 if has Copy; then verdict "RG_C4_BARS_AFTER_FAILED_DROP=PASS"; else verdict "RG_C4_BARS_AFTER_FAILED_DROP=FAIL"; fi
 check RG_C4_SELECTION_KEPT "bravo" "$(tapcopy)"
+fi
+if want C5; then
 # C5 cancel mid handle drag: no magnifier, bars back, selection (bravo) unchanged
 page; overlay; tapw 0 1; g 0 1; HX=$XR; HY=$YM; g 0 2; CX=$XC; CY=$YM
 mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+CX)/2)) $HY; sleep .3; mev MOVE $CX $CY; sleep .4
@@ -77,6 +89,8 @@ M1=$(magcount); mev CANCEL $CX $CY; sleep 2; M2=$(magcount); shot rg-c5-after
 verdict "RG_C5_MAGNIFIER during=$M1 after_cancel=$M2 (expect after=0)"
 if has Copy; then verdict "RG_C5_BARS_AFTER_CANCEL=PASS"; else verdict "RG_C5_BARS_AFTER_CANCEL=FAIL"; fi
 check RG_C5_SELECTION_KEPT "bravo" "$(tapcopy)"
+fi
+if want C6; then
 # C6 circle round "hotel" only (rx 50css, ry 30css); neighbours are 130css / 100css away
 page; overlay; g 2 1
 python3 - $XC $YM $DPI > /tmp/circ.txt <<'PY'
@@ -88,6 +102,8 @@ PY
 n=0; f=1; while read X Y; do if [ $f = 1 ]; then mev DOWN $X $Y; f=0; else mev MOVE $X $Y; fi; n=$((n+1)); [ $n = 12 ] && shot rg-c6-mid; done < /tmp/circ.txt
 mev UP $X $Y; sleep 4; shot rg-c6-after
 check RG_C6_CIRCLE_ONLY_HOTEL "hotel" "$(tapcopy)"
+fi
+if want C7; then
 # C7 rectangle drag over delta..foxtrot: clean and jittery drags must select the same text
 for MODE in clean jitter; do
   page; overlay; g 1 0; X0=$((XL-10)); Y0=$((YM-40)); g 1 2; X1=$((XR+10)); Y1=$((YM+40))
@@ -96,6 +112,8 @@ for MODE in clean jitter; do
   shot rg-c7-$MODE-mid; mev UP $X1 $Y1; sleep 4; shot rg-c7-$MODE
   check RG_C7_RECT_$MODE "delta echo foxtrot" "$(tapcopy)"
 done
+fi
 adb logcat -d > $OUT/rg-logcat.txt
 F=$(grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/rg-logcat.txt); verdict "RG_FATAL_LOG_COUNT=$F"
+adb logcat -d -s RGOBS:D > $OUT/rg-obs.txt; echo "=== RGOBS (test-only counters/coords) ==="; head -80 $OUT/rg-obs.txt
 echo "=== RG VERDICTS ==="; cat $V
