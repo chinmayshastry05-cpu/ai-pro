@@ -96,6 +96,25 @@ check() { # name expected actual
   local a="$3"; local n=$(printf '%s' "$a" | sed 's/&#10;/ /g' | tr '\n' ' ' | sed 's/  */ /g; s/^ //; s/ $//')
   if [ "$a" = "$2" ]; then verdict "$1=PASS (copied '$a')"; elif [ "$n" = "$2" ]; then verdict "$1=PASS_WITH_LINEBREAK_SEPARATORS (raw copy '$a', words match, separator is a line break not a space)"; else verdict "$1=FAIL (expected '$2' got '$a')"; fi; }
 
+if want C10; then
+# C10 screen recordings of gesture start/end frames: tap, circle, rectangle (for plus mark / crop box / flash / Reading text / stray handles review)
+rec_start() { adb shell "rm -f /sdcard/$1.mp4; screenrecord --time-limit 30 /sdcard/$1.mp4" </dev/null >/dev/null 2>&1 & RECPID=$!; sleep 3; }
+rec_stop() { sleep 2; adb shell pkill -2 screenrecord </dev/null; sleep 3; wait $RECPID 2>/dev/null; adb pull /sdcard/$1.mp4 $OUT/ >/dev/null 2>&1; }
+page; overlay; g 0 1; rec_start rec-tap; for k in 1 2 3; do adb shell input tap $XC $YM; sleep 4; has Copy && break; done; shot rg-c10-tap; rec_stop rec-tap
+page; overlay; g 2 1
+python3 - $XC $YM $DPI > /tmp/circ.txt <<'PY'
+import math,sys
+cx,cy,dpi=int(sys.argv[1]),int(sys.argv[2]),int(sys.argv[3]); d=dpi/160.0
+for i in range(0,41):
+    a=2*math.pi*i/36; print(int(cx+50*d*math.cos(a)), int(cy+30*d*math.sin(a)))
+PY
+awk 'NR==1{print "input motionevent DOWN " $1 " " $2; next}{print "input motionevent MOVE " $1 " " $2}' /tmp/circ.txt > /tmp/circ.sh
+X=$(tail -1 /tmp/circ.txt | cut -d' ' -f1); Y=$(tail -1 /tmp/circ.txt | cut -d' ' -f2)
+rec_start rec-circle; [ $INVALID = 1 ] || adb shell < /tmp/circ.sh; [ $INVALID = 1 ] || adb shell input motionevent UP $X $Y; sleep 4; shot rg-c10-circle; rec_stop rec-circle
+page; overlay; g 1 0; X0=$((XL-4)); Y0=$((YM-40)); g 1 2; X1=$((XR+10)); Y1=$((YM+40))
+rec_start rec-rect; mev DOWN $X0 $Y0; for i in $(seq 1 15); do mev MOVE $((X0+(X1-X0)*i/15)) $((Y0+(Y1-Y0)*i/15)); done; mev UP $X1 $Y1; sleep 4; shot rg-c10-rect; rec_stop rec-rect
+verdict "RG_C10_RECORDINGS=captured (visual review only, no automatic verdict)"
+fi
 if want C0; then
 # C0 control: the same tap the existing passing CI script makes on testpage.html (30%W,19%H)
 page "http://10.0.2.2:8901/testpage.html" "quick brown"
