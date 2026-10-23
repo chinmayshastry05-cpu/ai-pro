@@ -108,25 +108,25 @@ page; overlay; tapw 0 1; shot rg-c1; check RG_C1_TAP_WORD "bravo" "$(tapcopy)"
 fi
 if want C2; then
 # C2 end handle drag extends the range alpha..charlie
-page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $XC $YM; sleep .5; shot rg-c2-mid; mev UP $XC $YM; sleep 3; shot rg-c2
+page; overlay; tapw 0 0; g 0 0; HX=$XR; HY=$YM; g 0 2; mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+XC)/2)) $HY; sleep .3; mev MOVE $XC $YM; sleep .5; shot rg-c2-mid; mev UP $XC $YM; sleep 3; shot rg-c2
 check RG_C2_END_HANDLE "alpha bravo charlie" "$(tapcopy)"
 fi
 if want C3; then
 # C3 start handle dragged past the end swaps: bravo, start handle to delta -> bravo charlie delta
-page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $SY; sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $XC $YM; sleep .5; mev UP $XC $YM; sleep 3; shot rg-c3
+page; overlay; tapw 0 1; g 0 1; SX=$XL; SY=$YM; g 1 0; mev DOWN $SX $((SY+80)); sleep .3; mev MOVE $(((SX+XC)/2)) $(((SY+YM)/2)); sleep .3; mev MOVE $XC $YM; sleep .5; mev UP $XC $YM; sleep 3; shot rg-c3
 check RG_C3_HANDLE_SWAP "bravo charlie delta" "$(tapcopy)"
 fi
 if want C4; then
 # C4 failed drop far from any word: bars back and the confirmed selection (bravo) unchanged
 page; overlay; tapw 0 1; g 0 1; HX=$XR; HY=$YM; shot rg-c4-before
-mev DOWN $HX $HY; sleep .3; mev MOVE $HX $((H*80/100)); sleep .3; mev UP $HX $((H*80/100)); sleep 3; shot rg-c4-after
+mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $HX $((H*80/100)); sleep .3; mev UP $HX $((H*80/100)); sleep 3; shot rg-c4-after
 bars RG_C4_BARS_AFTER_FAILED_DROP
 check RG_C4_SELECTION_KEPT "bravo" "$(tapcopy)"
 fi
 if want C5; then
 # C5 cancel mid handle drag: no magnifier, bars back, selection (bravo) unchanged
 page; overlay; tapw 0 1; g 0 1; HX=$XR; HY=$YM; g 0 2; CX=$XC; CY=$YM
-mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+CX)/2)) $HY; sleep .3; mev MOVE $CX $CY; sleep .4
+mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+CX)/2)) $HY; sleep .3; mev MOVE $CX $CY; sleep .4
 M1=$(magcount); mev CANCEL $CX $CY; sleep 2; M2=$(magcount); shot rg-c5-after
 verdict "RG_C5_MAGNIFIER during=$M1 after_cancel=$M2 (expect after=0)"
 bars RG_C5_BARS_AFTER_CANCEL
@@ -159,14 +159,14 @@ fi
 if want C8; then
 # C8 digit-level: tap the number 24733, drag the end handle to the boundary after the 3rd digit; copy must be 247
 page "http://10.0.2.2:8901/10-fixture.html" "24733"; overlay; tapw 3 2; g 3 2; HX=$XR; HY=$YM; W5=$((XR-XL)); DX=$((XL+W5*62/100))
-mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+DX)/2)) $HY; sleep .3; mev MOVE $DX $HY; sleep .3; mev UP $DX $HY; sleep 3; shot rg-c8-after
+mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+DX)/2)) $YM; sleep .3; mev MOVE $DX $YM; sleep .3; mev UP $DX $YM; sleep 3; shot rg-c8-after
 echo "C8 geom XL=$XL XR=$XR DX=$DX" >> $OUT/rg-notes.txt
 check RG_C8_DIGITS_247 "247" "$(tapcopy)"
 fi
 if want C9; then
 # C9 cross-line: tap delta (row1), drag end handle onto hotel (row2 col1): copy must start delta, include echo foxtrot golf, not india
 page; overlay; tapw 1 0; g 1 0; HX=$XR; HY=$YM; g 2 1; CX=$XC; CY=$YM
-mev DOWN $HX $HY; sleep .3; mev MOVE $(((HX+CX)/2)) $(((HY+CY)/2)); sleep .3; mev MOVE $CX $CY; sleep .3; mev UP $CX $CY; sleep 3; shot rg-c9-after
+mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+CX)/2)) $(((HY+CY)/2)); sleep .3; mev MOVE $CX $CY; sleep .3; mev UP $CX $CY; sleep 3; shot rg-c9-after
 A="$(tapcopy)"; N9=$(printf '%s' "$A" | tr '\n' ' ' | sed 's/  */ /g')
 case "$N9" in delta*echo*foxtrot*golf*) case "$N9" in *india*) verdict "RG_C9_CROSSLINE=FAIL (includes india: '$A')";; *) verdict "RG_C9_CROSSLINE=PASS (copied '$N9')";; esac;; *) verdict "RG_C9_CROSSLINE=FAIL (got '$A')";; esac
 fi
