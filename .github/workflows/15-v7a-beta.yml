@@ -1,0 +1,89 @@
+name: v7a-beta
+on:
+  push:
+    branches: [ 'beta/v7a' ]
+    paths: [ '.github/workflows/15-v7a-beta.yml' ]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+    steps:
+      - name: require signing secrets
+        run: test -n "$KS_B64" || { echo "no keystore secret"; exit 1; }
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0, path: src }
+      - name: confirm main is the accepted 0.8.9 source
+        run: test "$(git -C src rev-parse HEAD)" = "150285ca42d40d9dbe046aa76033def21e34d142"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: make the 32-bit variant (ABI + version only)
+        run: |
+          set -e
+          cd src
+          sed -i "s/abiFilters 'arm64-v8a'/abiFilters 'armeabi-v7a'/; s/versionCode 33/versionCode 34/; s/versionName \"0.8.9\"/versionName \"0.8.9-v7a-beta1\"/" app/build.gradle
+          git diff -- app/build.gradle
+          grep -q "abiFilters 'armeabi-v7a'" app/build.gradle
+          grep -q 'versionCode 34' app/build.gradle
+      - name: build release
+        run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+      - name: sign
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          echo "$KS_B64" | base64 -d > /tmp/ks.jks
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          "$BT/zipalign" -f 4 src/app/build/outputs/apk/release/app-release-unsigned.apk /tmp/aligned.apk
+          "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" --ks-key-alias "$KEY_ALIAS" --out /tmp/AI-Pro-v0.8.9-v7a-beta1.apk /tmp/aligned.apk
+          rm -f /tmp/ks.jks
+      - name: static checks
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          A=/tmp/AI-Pro-v0.8.9-v7a-beta1.apk
+          "$BT/apksigner" verify --verbose --print-certs $A | tee /tmp/cert.txt
+          grep -q "ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06" /tmp/cert.txt
+          "$BT/aapt2" dump badging $A | grep -E "^package|sdkVersion|native-code|uses-feature" | tee /tmp/badging.txt
+          grep -q "native-code: 'armeabi-v7a'" /tmp/badging.txt
+          ! grep -q "arm64" /tmp/badging.txt
+          unzip -l $A | grep -E 'lib/' | tee /tmp/libs.txt
+          test "$(grep -c 'lib/armeabi-v7a/' /tmp/libs.txt)" = "8"
+          test "$(grep -c 'lib/arm64-v8a/' /tmp/libs.txt)" = "0"
+          mkdir /tmp/x && cd /tmp/x && unzip -q $A 'lib/*'
+          for f in lib/armeabi-v7a/*.so; do readelf -h $f | grep -E 'Class|Machine' | tr '\n' ' '; echo " $f"; done | tee /tmp/elf.txt
+          test "$(grep -c 'ELF32' /tmp/elf.txt)" = "8"
+          test "$(grep -c 'ARM' /tmp/elf.txt)" = "8"
+          sha256sum $A | tee /tmp/sha.txt
+          ls -l $A
+      - name: publish prerelease (separate from v0.8.9)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b beta/v7a-src
+          git add app/build.gradle
+          git commit -q -m "32-bit (armeabi-v7a) beta variant of 0.8.9: ABI filter and version only"
+          git push origin beta/v7a-src
+          SHA=$(sha256sum /tmp/AI-Pro-v0.8.9-v7a-beta1.apk | cut -d' ' -f1)
+          cat > /tmp/notes.md <<MSG
+          AI Pro 0.8.9 32-bit beta (v7a-beta1, versionCode 34).
+
+          Same source as v0.8.9 (commit 150285ca). Only change: native libraries are armeabi-v7a (32-bit ARM) instead of arm64-v8a. Meant for phones with 32-bit Android userspace, such as the Galaxy A13. The 64-bit v0.8.9 release is unchanged.
+
+          Checked in CI: signed with the same release key as v0.8.9 (cert sha256 ab63ad55...aeb1f06), all 8 native libraries are 32-bit ARM ELF, no arm64 libraries. NOT run on a 32-bit device or emulator. Behaviour on a real 32-bit phone is untested.
+
+          APK sha256: $SHA
+          MSG
+          gh release create v0.8.9-v7a-beta1 /tmp/AI-Pro-v0.8.9-v7a-beta1.apk --repo "$GITHUB_REPOSITORY" --target beta/v7a-src --prerelease --title "AI Pro 0.8.9 32-bit beta 1" --notes-file /tmp/notes.md
+          gh release view v0.8.9-v7a-beta1 --repo "$GITHUB_REPOSITORY" --json url,isPrerelease -q '.url, .isPrerelease'
