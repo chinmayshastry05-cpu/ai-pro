@@ -32,7 +32,8 @@ jobs:
         with:
           name: clean-candidate
           path: out/
-  test:
+  smoke:
+    needs: clean-apk
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -41,15 +42,13 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: '7.6.4' }
-      - name: overlay Muse v8 SelectActivity (hash checked)
+      - uses: actions/download-artifact@v4
+        with: { name: clean-candidate, path: dl }
+      - name: verify hash then place the exact candidate APK
         run: |
-          F=$(find ci -name '*SelectActivity-v8.kt' | head -1)
-          echo "9bfd2bdaac352cb26900755eb2085479589a88a2ef605fa748e6755474e3e62c  $F" | sha256sum -c -
-          cp "$F" app/src/main/java/com/aipro/select/SelectActivity.kt
-      - name: add test-only logcat counters (test branch only)
-        run: bash $(ls ci/*obs-inject.sh)
-      - name: build debug APK
-        run: gradle assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process
+          cd dl && sha256sum -c <(grep "AI-Pro-v0.8.9-test2-unverified.apk" sha256.txt | sed 's#out/##') && cd ..
+          mkdir -p app/build/outputs/apk/debug; cp dl/AI-Pro-v0.8.9-test2-unverified.apk app/build/outputs/apk/debug/app-debug.apk
+          sha256sum app/build/outputs/apk/debug/app-debug.apk
       - name: install pillow for screenshot diffs
         run: python3 -m pip install --user pillow
       - name: serve test page
@@ -67,12 +66,12 @@ jobs:
           target: google_apis
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
-          script: bash $(ls ci/*run-regression.sh)
+          script: bash ci/smoke.sh
         env:
-          RG_CASES: "C1 C2 C7"
+          RG_CASES: "C1 C6"
       - name: upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: smoke-results
           path: ci/out/
