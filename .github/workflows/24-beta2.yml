@@ -337,7 +337,7 @@ jobs:
           arch: arm64-v8a
           target: google_apis
           profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          emulator-options: -no-window -noaudio -no-boot-anim -no-snapshot-save
           script: bash ci/smoke.sh
         env:
           RG_CASES: "C1 C2 C6 C7 C13"
