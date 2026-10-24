@@ -1,0 +1,16 @@
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+
+// Regression fixture: NOT shipped. A single-TextView message screen that mimics
+// how WhatsApp exposes a chat message to accessibility (one node, whole text),
+// plus an invisible marker over the target word and an EditText paste target.
+android {
+    namespace 'com.aipro.fixture'
+    compileSdk 33
+    defaultConfig {
+        applicationId "com.aipro.fixture"
+        minSdk 30
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+    }
+}

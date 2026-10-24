@@ -7,7 +7,7 @@ want() { [ -z "$RG_CASES" ] || [[ " $RG_CASES " == *" $1 "* ]]; }
 verdict() { echo "$1" | tee -a $V; }
 bars() { if [ $INVALID = 1 ]; then verdict "$1=INVALID (precondition failed, not an app result)"; elif has Copy; then verdict "$1=PASS"; else verdict "$1=FAIL"; fi; }
 ui() { adb shell uiautomator dump /sdcard/u.xml >/dev/null 2>&1; adb pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1; }
-has() { ui; grep -q "text=\"$1\"" /tmp/u.xml; }
+has() { ui; grep -q "text=\"$1\"\|content-desc=\"$1\"" /tmp/u.xml; }
 alive() { adb shell pidof $PKG >/dev/null 2>&1; }
 shot() { adb shell screencap -p /sdcard/$1.png; adb pull /sdcard/$1.png $OUT/ >/dev/null 2>&1; }
 mev() { [ $INVALID = 1 ] && return; if [ "$1" = DOWN ] && { [ "$2" -lt 80 ] || [ "$2" -gt $((W-80)) ]; }; then INVALID=1; echo "INVALID: gesture start x=$2 is inside the system edge-back zone" >> $OUT/rg-notes.txt; return; fi; echo "mev $* top=$(adb shell dumpsys activity activities </dev/null 2>/dev/null | grep -m1 -E "topResumedActivity" | grep -o "com[^ ]*" | head -1)" >> $OUT/rg-mev.txt; adb shell input motionevent "$@" </dev/null; }
@@ -87,8 +87,12 @@ PY
 tapcopy() { ui; B=$(python3 - <<'PY'
 import re
 x=open('/tmp/u.xml').read()
-for m in re.finditer(r'text="Copy"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', x):
-    a,b,c,d=map(int,m.groups()); print((a+c)//2,(b+d)//2); break
+for m in re.finditer(r'<node[^>]*>', x):
+    n=m.group(0)
+    if re.search(r'(text|content-desc)="Copy"', n):
+        b=re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
+        if b:
+            a,bb,c,d=map(int,b.groups()); print((a+c)//2,(bb+d)//2); break
 PY
 ); if [ -z "$B" ]; then echo "<<no-copy-button>>"; return; fi; adb shell input tap $B; paste_text; }
 check() { # name expected actual
@@ -208,6 +212,78 @@ page; overlay; tapw 1 0; g 1 0; HX=$XR; HY=$YM; g 2 1; CX=$XC; CY=$YM
 mev DOWN $HX $((HY+80)); sleep .3; mev MOVE $(((HX+CX)/2)) $(((HY+CY)/2)); sleep .3; mev MOVE $CX $CY; sleep .3; mev UP $CX $CY; sleep 3; shot rg-c9-after
 A="$(tapcopy)"; N9=$(printf '%s' "$A" | tr '\n' ' ' | sed 's/  */ /g')
 case "$N9" in delta*echo*foxtrot*golf*) case "$N9" in *india*) verdict "RG_C9_CROSSLINE=FAIL (includes india: '$A')";; *) verdict "RG_C9_CROSSLINE=PASS (copied '$N9')";; esac;; *) verdict "RG_C9_CROSSLINE=FAIL (got '$A')";; esac
+fi
+if want C13; then
+# C13 single-node message scope (WhatsApp shape): the whole sentence is ONE
+# TextView node, so no node center sits inside a tapped word. Copy must return
+# only the tapped word; hardened beta 1 copies the whole message (reported bug).
+# Also asserts the icon toolbar (content-desc, no text labels) and the single menu.
+FX=com.aipro.fixture
+adb install -r fixture/build/outputs/apk/debug/fixture-debug.apk || verdict "RG_C13_FIXTURE_INSTALL=FAIL"
+adb shell am start -n $FX/.FixtureActivity >/dev/null; sleep 5; dismiss; ui; cp /tmp/u.xml /tmp/fx.xml
+read TX TY < <(python3 - <<'PY'
+import re
+x=open('/tmp/fx.xml').read()
+for m in re.finditer(r'<node[^>]*>', x):
+    n=m.group(0)
+    if 'content-desc="rg-target"' in n:
+        b=re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
+        if b:
+            a,bb,c,d=map(int,b.groups()); print((a+c)//2,(bb+d)//2); break
+PY
+)
+echo "C13 marker screen coords: $TX $TY" >> $OUT/rg-notes.txt
+if ! num "$TX" || ! num "$TY"; then INVALID=1; echo "INVALID: rg-target marker not found" >> $OUT/rg-notes.txt; fi
+overlay
+COPIED=""
+if [ $INVALID = 0 ]; then
+  TXM=$(python3 -c "print(int(round(($TX-($DX))/$KX)))"); TYM=$(python3 -c "print(int(round(($TY-($DY))/$KY)))")
+  echo "C13 mapped tap: $TXM $TYM (k=$KX,$KY d=$DX,$DY)" >> $OUT/rg-notes.txt
+  for k in 1 2 3 4; do adb shell input tap $TXM $TYM; sleep 5; dismiss; if has Copy; then break; fi; echo "C13 tap retry $k" >> $OUT/rg-notes.txt; done
+  shot rg-c13
+  ui; cp /tmp/u.xml $OUT/rg-c13-toolbar.xml
+  for d in Translate Copy Share Search "Add event"; do
+    if grep -q "content-desc=\"$d\"" /tmp/u.xml; then verdict "RG_C13_ICON_$d=PASS"; else verdict "RG_C13_ICON_$d=FAIL"; fi
+  done
+  if grep -q 'text="Translate"' /tmp/u.xml; then verdict "RG_C13_SINGLE_MENU=FAIL (a Translate text label is still shown)"; else verdict "RG_C13_SINGLE_MENU=PASS (no text-label menu; one icon toolbar)"; fi
+  B=$(python3 - <<'PY'
+import re
+x=open('/tmp/u.xml').read()
+for m in re.finditer(r'<node[^>]*>', x):
+    n=m.group(0)
+    if re.search(r'(text|content-desc)="Copy"', n):
+        b=re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
+        if b:
+            a,bb,c,d=map(int,b.groups()); print((a+c)//2,(bb+d)//2); break
+PY
+)
+  if [ -z "$B" ]; then echo "C13: no Copy control" >> $OUT/rg-notes.txt; else adb shell input tap $B; sleep 3; fi
+  ui
+  E=$(python3 - <<'PY'
+import re
+x=open('/tmp/u.xml').read()
+for m in re.finditer(r'<node[^>]*>', x):
+    n=m.group(0)
+    if 'class="android.widget.EditText"' in n:
+        b=re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', n)
+        if b:
+            a,bb,c,d=map(int,b.groups()); print((a+c)//2,(bb+d)//2); break
+PY
+)
+  if [ -z "$E" ]; then echo "C13: fixture EditText not found" >> $OUT/rg-notes.txt; else adb shell input tap $E; sleep 1; adb shell input keyevent 279; sleep 1; fi
+  ui
+  COPIED=$(python3 - <<'PY'
+import re
+x=open('/tmp/u.xml').read()
+for m in re.finditer(r'<node[^>]*>', x):
+    n=m.group(0)
+    if 'class="android.widget.EditText"' in n:
+        t=re.search(r'text="([^\"]*)"', n)
+        if t: print(t.group(1)); break
+PY
+)
+fi
+check RG_C13_WORD_SCOPE "jerk" "$COPIED"
 fi
 adb logcat -d > $OUT/rg-logcat.txt
 F=$(grep -c -E "FATAL EXCEPTION|Fatal signal|SIGSEGV" $OUT/rg-logcat.txt); verdict "RG_FATAL_LOG_COUNT=$F"
