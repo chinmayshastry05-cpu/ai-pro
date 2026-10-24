@@ -1,0 +1,369 @@
+name: hardened-beta2
+on:
+  push:
+    branches: [ 'beta/beta2-build' ]
+    paths: [ '.github/workflows/24-beta2.yml' ]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+    steps:
+      - name: require signing secrets
+        run: test -n "$KS_B64" || { echo "no keystore secret"; exit 1; }
+      - uses: actions/checkout@v4
+        with: { ref: 9842625dd6daafb585120ce4f08b4ace977fc1d0, fetch-depth: 0, path: src }
+      - name: confirm pinned hardened beta 1 source
+        run: test "$(git -C src rev-parse HEAD)" = "9842625dd6daafb585120ce4f08b4ace977fc1d0"
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - name: apply the beta2 fixes
+        run: |
+          set -e
+          cd src
+          cat > /tmp/beta2.patch <<'PATCH_EOF'
+          diff --git a/app/build.gradle b/app/build.gradle
+          index 603cec2..d6d9d51 100644
+          --- a/app/build.gradle
+          +++ b/app/build.gradle
+          @@ -23,8 +23,8 @@ android {
+                   applicationId "com.aipro.select"
+                   minSdk 30
+                   targetSdk 33
+          -        versionCode 35
+          -        versionName "0.8.9-hardened-beta1"
+          +        versionCode 37
+          +        versionName "0.8.9-hardened-beta2"
+                   ndk { abiFilters 'arm64-v8a' }
+               }
+               buildTypes {
+          diff --git a/app/src/main/java/com/aipro/select/SelectActivity.kt b/app/src/main/java/com/aipro/select/SelectActivity.kt
+          index 63c8cdb..531764f 100644
+          --- a/app/src/main/java/com/aipro/select/SelectActivity.kt
+          +++ b/app/src/main/java/com/aipro/select/SelectActivity.kt
+          @@ -376,8 +376,9 @@ class SelectActivity : Activity() {
+                   selView.setTextLines(highlight ?: linesInView(viewRect))
+                   selView.setConfirmed(viewRect)
+                   showChrome(true)
+          -        gifPill.visibility = View.GONE // CTS look: the Copy | Translate chip takes that slot
+          -        showTextChip(viewRect)
+          +        gifPill.visibility = View.GONE
+          +        // no separate Copy | Translate capsule: the icon toolbar below the
+          +        // selection carries every action once (duplicate menu confused users)
+                   readText()
+               }
+           
+          @@ -1076,14 +1077,15 @@ class SelectActivity : Activity() {
+                   bar.visibility = View.GONE
+               }
+           
+          -    private fun textBtn(t: String, f: () -> Unit): TextView {
+          -        val tv = TextView(this)
+          -        tv.text = t
+          -        tv.textSize = 13.5f
+          -        tv.setTextColor(Color.WHITE)
+          -        tv.setPadding(dp(13f), dp(10f), dp(13f), dp(10f))
+          -        tv.setOnClickListener { f() }
+          -        return tv
+          +    /** Icon button for the text toolbar: contentDescription keeps the action name
+          +     *  for accessibility, a long-press shows the same label. */
+          +    private fun textAction(res: Int, label: String, f: () -> Unit): ImageView {
+          +        val iv = chipIcon(res, label, f)
+          +        iv.setOnLongClickListener {
+          +            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+          +            true
+          +        }
+          +        return iv
+               }
+           
+               private fun buildTextBar() {
+          @@ -1092,11 +1094,11 @@ class SelectActivity : Activity() {
+                   textBar.gravity = Gravity.CENTER
+                   textBar.setBackgroundResource(R.drawable.toolbar_bg)
+                   textBar.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
+          -        textBar.addView(textBtn("Translate") { translateText() })
+          -        textBar.addView(textBtn("Copy") { copyText() })
+          -        textBar.addView(textBtn("Share") { shareText() })
+          -        textBar.addView(textBtn("Search") { searchText() })
+          -        textBar.addView(textBtn("Add event") { addEvent() })
+          +        textBar.addView(textAction(R.drawable.ic_translate, "Translate") { translateText() })
+          +        textBar.addView(textAction(R.drawable.ic_copy_img, "Copy") { copyText() })
+          +        textBar.addView(textAction(R.drawable.ic_share, "Share") { shareText() })
+          +        textBar.addView(textAction(R.drawable.ic_search, "Search") { searchText() })
+          +        textBar.addView(textAction(R.drawable.ic_event, "Add event") { addEvent() })
+                   textBar.visibility = View.GONE
+               }
+           
+          @@ -1388,7 +1390,6 @@ class SelectActivity : Activity() {
+                   selViewRect?.let { selView.setTextLines(linesInView(it)) }
+                   showChrome(true)
+                   gifPill.visibility = View.GONE
+          -        selViewRect?.let { showTextChip(it) }
+                   readText()
+               }
+           
+          @@ -1439,9 +1440,14 @@ class SelectActivity : Activity() {
+                   // the nodes only know whole words, so they cannot supply partial words
+                   val charText = textFromCharRanges()
+                   if (charText != null) { finishOcr(charText); return }
+          -        // real text from the app itself first - exact Unicode, every language, zero OCR error
+          +        // real text from the app itself, but only when the selection covers whole
+          +        // nodes - a tapped word inside a single-node message must not become the
+          +        // whole message (the Search bug)
+                   val fromScreen = textFromNodes()
+                   if (fromScreen.isNotEmpty()) { finishOcr(fromScreen); return }
+          +        // exactly the selected words from the OCR word data that drives the highlight
+          +        val fromWords = textFromWords()
+          +        if (fromWords.isNotEmpty()) { finishOcr(fromWords); return }
+                   runOcr(c)
+               }
+           
+          @@ -1467,6 +1473,40 @@ class SelectActivity : Activity() {
+                   return sb.toString().trim().ifEmpty { null }
+               }
+           
+          +    /** Text of exactly the selected words, from the OCR word data behind the
+          +     *  highlight. Used when the selection covers no whole node (a tapped word or
+          +     *  a handle range inside a single-node message): the node only carries the
+          +     *  full message, so the selection scope comes from the words. Same line joins
+          +     *  with a space, different lines with a newline. */
+          +    private fun textFromWords(): String {
+          +        if (wordChars.isEmpty()) return ""
+          +        val targets: List<RectF> = selRangeBmp ?: selHighlightBmp
+          +            ?: cropRectBmp?.let { listOf(RectF(it)) } ?: return ""
+          +        if (targets.isEmpty()) return ""
+          +        // dedupe like cursorSpanChar: the 5 recognizers often return the same word
+          +        fun dedupKey(wc: WordChars) =
+          +            wc.text + "|" + wc.box.left + "," + wc.box.top + "," + wc.box.right + "," + wc.box.bottom
+          +        val seen = HashSet<String>()
+          +        val deduped = wordChars.filter { seen.add(dedupKey(it)) }
+          +        val matched = deduped.filter { wc ->
+          +            val cx = wc.box.centerX(); val cy = wc.box.centerY()
+          +            targets.any { val t = RectF(it); t.inset(-2f, -2f); t.contains(cx, cy) }
+          +        }
+          +        if (matched.isEmpty()) return ""
+          +        val ordered = readingOrderOf(matched) { it.box }
+          +        val sb = StringBuilder()
+          +        for ((i, wc) in ordered.withIndex()) {
+          +            if (i > 0) {
+          +                val prev = ordered[i - 1]
+          +                val dy = kotlin.math.abs(wc.box.centerY() - prev.box.centerY())
+          +                val sameLine = dy < minOf(wc.box.height(), prev.box.height()) * 0.5f
+          +                sb.append(if (sameLine) " " else "\n")
+          +            }
+          +            sb.append(wc.text)
+          +        }
+          +        return sb.toString().trim()
+          +    }
+          +
+               /** Text of the on-screen nodes inside the current selection (dumped at capture time). */
+               private fun textFromNodes(): String {
+                   val nodes = Shared.nodeTexts
+          @@ -1497,9 +1537,11 @@ class SelectActivity : Activity() {
+                       // nodes whose center sits inside the selection - avoids bleeding in neighbouring messages
+                       inside = hits.filter { sel.contains(it.first.centerX().toFloat(), it.first.centerY().toFloat()) }
+                   }
+          -        if (hits.isEmpty()) return ""
+          -        val use = if (inside.isNotEmpty()) inside else hits
+          -        return readingOrderOf(use) { RectF(it.first) }
+          +        // only nodes the selection actually covers: when no node center sits
+          +        // inside (e.g. one word tapped in a big message view), the caller falls
+          +        // back to the selected words instead of the whole node text
+          +        if (inside.isEmpty()) return ""
+          +        return readingOrderOf(inside) { RectF(it.first) }
+                       .joinToString("\n") { it.second }.trim()
+               }
+           
+          diff --git a/app/src/main/res/drawable/ic_event.xml b/app/src/main/res/drawable/ic_event.xml
+          new file mode 100644
+          index 0000000..47c54b4
+          --- /dev/null
+          +++ b/app/src/main/res/drawable/ic_event.xml
+          @@ -0,0 +1,3 @@
+          +<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+          +    <path android:strokeColor="#FFFFFF" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M5,6.5 L19,6.5 A1.5,1.5 0 0,1 20.5,8 L20.5,19 A1.5,1.5 0 0,1 19,20.5 L5,20.5 A1.5,1.5 0 0,1 3.5,19 L3.5,8 A1.5,1.5 0 0,1 5,6.5 Z M3.5,10.5 L20.5,10.5 M8,4 L8,7.5 M16,4 L16,7.5 M12,12.5 L12,17.5 M9.5,15 L14.5,15"/>
+          +</vector>
+          diff --git a/app/src/main/res/drawable/ic_translate.xml b/app/src/main/res/drawable/ic_translate.xml
+          new file mode 100644
+          index 0000000..0d3588b
+          --- /dev/null
+          +++ b/app/src/main/res/drawable/ic_translate.xml
+          @@ -0,0 +1,3 @@
+          +<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+          +    <path android:fillColor="#FFFFFF" android:pathData="M12.87,15.07l-2.54,-2.51 0.03,-0.03c1.74,-1.94 2.98,-4.17 3.71,-6.53L17,5.99L17,4h-7L10,2L8,2v2L1,4v1.99h11.17C11.5,7.92 10.44,9.75 9,11.35 8.07,10.32 7.3,9.19 6.69,8h-2c0.73,1.63 1.73,3.17 2.98,4.56l-5.09,5.02L4,19l5,-5 3.11,3.11 0.76,-2.04zM18.5,10h-2L12,22h2l1.12,-3h4.75L21,22h2l-4.5,-12zM15.88,17l1.62,-4.33L19.12,17h-3.24z"/>
+          +</vector>
+          PATCH_EOF
+          git apply --check /tmp/beta2.patch
+          git apply /tmp/beta2.patch
+          grep -q "textFromWords" app/src/main/java/com/aipro/select/SelectActivity.kt
+          grep -q "ic_event" app/src/main/java/com/aipro/select/SelectActivity.kt
+          ! grep -q "showTextChip(viewRect)" app/src/main/java/com/aipro/select/SelectActivity.kt
+          test -f app/src/main/res/drawable/ic_translate.xml
+          test -f app/src/main/res/drawable/ic_event.xml
+          grep -q "versionCode 37" app/build.gradle
+          grep -q "0.8.9-hardened-beta2" app/build.gradle
+          git diff --stat
+      - name: build arm64 release
+        run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process && cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/arm64-unsigned.apk
+      - name: commit source branches
+        run: |
+          set -e
+          cd src
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q -b beta/beta2-src
+          git add -A app
+          git commit -q -m "0.8.9 hardened beta 2 (arm64) source: selected-word scope for text actions, icon toolbar, single menu"
+          git push --force origin beta/beta2-src
+          git checkout -q -b beta/beta2-v7a-src
+          sed -i "s/abiFilters 'arm64-v8a'/abiFilters 'armeabi-v7a'/; s/versionCode 37/versionCode 38/; s/versionName \"0.8.9-hardened-beta2\"/versionName \"0.8.9-hardened-v7a-beta2\"/" app/build.gradle
+          grep -q "abiFilters 'armeabi-v7a'" app/build.gradle
+          grep -q "versionCode 38" app/build.gradle
+          git add app/build.gradle
+          git commit -q -m "0.8.9 hardened beta 2, 32-bit variant: ABI filter and version only"
+          git push --force origin beta/beta2-v7a-src
+      - name: build v7a release
+        run: cd src && gradle assembleRelease --no-daemon -Dkotlin.compiler.execution.strategy=in-process && cp app/build/outputs/apk/release/app-release-unsigned.apk /tmp/v7a-unsigned.apk
+      - name: sign both
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -e
+          mkdir -p /tmp/out
+          echo "$KS_B64" | base64 -d > /tmp/ks.jks
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          for v in arm64:AI-Pro-v0.8.9-hardened-beta2.apk v7a:AI-Pro-v0.8.9-hardened-v7a-beta2.apk; do
+            k=${v%%:*}; n=${v#*:}
+            "$BT/zipalign" -f 4 /tmp/$k-unsigned.apk /tmp/$k-aligned.apk
+            "$BT/apksigner" sign --ks /tmp/ks.jks --ks-pass "pass:$STORE_PASSWORD" --key-pass "pass:$KEY_PASSWORD" --ks-key-alias "$KEY_ALIAS" --out /tmp/out/$n /tmp/$k-aligned.apk
+          done
+          rm -f /tmp/ks.jks
+      - name: static checks on both APKs
+        run: |
+          set -e
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          for pair in AI-Pro-v0.8.9-hardened-beta2.apk:arm64-v8a:37 AI-Pro-v0.8.9-hardened-v7a-beta2.apk:armeabi-v7a:38; do
+            n=${pair%%:*}; r=${pair#*:}; abi=${r%%:*}; code=${r#*:}
+            A=/tmp/out/$n
+            echo "=== $n"
+            "$BT/apksigner" verify --verbose --print-certs $A | tee /tmp/cert.txt
+            grep -q "ab63ad55f11acc2f11bc8f56bf35a56a989c260f628720c7632cee2c0aeb1f06" /tmp/cert.txt
+            "$BT/aapt2" dump badging $A > /tmp/badging.txt
+            grep -E "^package|sdkVersion|native-code|uses-permission" /tmp/badging.txt
+            grep -q "versionCode='$code'" /tmp/badging.txt
+            grep -q "native-code: '$abi'" /tmp/badging.txt
+            test "$(grep -c '^native-code' /tmp/badging.txt)" = "1"
+            grep -q "RECORD_AUDIO" /tmp/badging.txt || { echo "RECORD_AUDIO missing (should be kept)"; exit 1; }
+            "$BT/aapt2" dump xmltree --file AndroidManifest.xml $A > /tmp/manifest.txt
+            grep -q "BIND_VOICE_INTERACTION_SERVICE" /tmp/manifest.txt || { echo "accepted assistant manifest line changed"; exit 1; }
+            if grep -qi "debuggable" /tmp/manifest.txt; then echo "debuggable flag present"; exit 1; fi
+            unzip -Z1 $A | grep -q "ic_translate.xml" || { echo "ic_translate missing from APK"; exit 1; }
+            unzip -Z1 $A | grep -q "ic_event.xml" || { echo "ic_event missing from APK"; exit 1; }
+            unzip -l $A | grep 'lib/' > /tmp/libs.txt
+            test "$(grep -c "lib/$abi/" /tmp/libs.txt)" = "8"
+            test "$(grep -c 'lib/' /tmp/libs.txt)" = "8"
+            rm -rf /tmp/x && mkdir /tmp/x && (cd /tmp/x && unzip -q $A 'lib/*')
+            for f in /tmp/x/lib/$abi/*.so; do readelf -h $f | grep -E 'Class|Machine' | tr '\n' ' '; echo; done | tee /tmp/elf.txt
+            found=0
+            for x in $(unzip -Z1 $A | grep '^res/.*\.xml$'); do
+              "$BT/aapt2" dump xmltree --file $x $A > /tmp/xt.txt 2>/dev/null || continue
+              if grep -q canTakeScreenshot /tmp/xt.txt; then
+                echo "a11y config file: $x"
+                grep -E "ventTypes|canTakeScreenshot|canRetrieveWindowContent|lags" /tmp/xt.txt
+                grep -q "ventTypes" /tmp/xt.txt || { echo "no eventTypes attribute"; exit 1; }
+                if grep -E "ventTypes" /tmp/xt.txt | grep -q -E "0xffffffff|=-1|=4294967295|typeAllMask"; then echo "event types still all"; exit 1; fi
+                found=1
+              fi
+            done
+            test "$found" = "1"
+            sha256sum $A
+          done
+      - uses: actions/upload-artifact@v4
+        with: { name: beta2-apks, path: /tmp/out/ }
+  evidence:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [ beta1-baseline, beta2 ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: '7.6.4' }
+      - uses: actions/download-artifact@v4
+        with:
+          name: beta2-apks
+          path: dl
+      - name: place the APK under test
+        run: |
+          set -e
+          mkdir -p app/build/outputs/apk/debug apk
+          if [ "${{ matrix.which }}" = "beta1-baseline" ]; then
+            curl -sL -o apk/test.apk https://github.com/${{ github.repository }}/releases/download/v0.8.9-hardened-beta1/AI-Pro-v0.8.9-hardened-beta1.apk
+            echo "9fee4a30c50858f0f8259b9a86b4e0348fd635f2bed0b90f176e9ca6db59cd59  apk/test.apk" | sha256sum -c -
+          else
+            cp dl/AI-Pro-v0.8.9-hardened-beta2.apk apk/test.apk
+          fi
+          cp apk/test.apk app/build/outputs/apk/debug/app-debug.apk
+          sha256sum apk/test.apk
+          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
+          "$BT/aapt2" dump badging apk/test.apk | grep -E "application-label:|^package"
+          "$BT/aapt2" dump badging apk/test.apk | grep -m1 "application-label:" | sed "s/application-label:'\(.*\)'/\1/" > /tmp/label.txt
+          cat /tmp/label.txt
+      - name: build the fixture app
+        run: gradle :fixture:assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process && ls -l fixture/build/outputs/apk/debug/
+      - run: python3 -m pip install --user pillow
+      - run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
+      - name: enable KVM
+        run: |
+          echo 'KERNEL="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: emulator regression
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
+          script: bash ci/smoke.sh
+        env:
+          RG_CASES: "C1 C2 C6 C7 C13"
+      - name: print verdicts
+        if: always()
+        run: |
+          echo "=== RG VERDICTS"; cat ci/out/rg-verdicts.txt || true
+          echo "=== RG NOTES"; cat ci/out/rg-notes.txt || true
+      - name: print screenshots as chunked base64 jpeg
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import base64,io,glob
+          from PIL import Image
+          files=sorted(glob.glob('ci/out/**/*.png',recursive=True))+sorted(glob.glob('out/**/*.png',recursive=True))
+          print('FILES',files)
+          for f in files:
+              im=Image.open(f).convert('RGB'); w,h=im.size; im=im.resize((320,int(h*320/w)))
+              b=io.BytesIO(); im.save(b,'JPEG',quality=45)
+              s=base64.b64encode(b.getvalue()).decode(); n=0
+              for i in range(0,len(s),160):
+                  print('@@L',f.split('/')[-1],n,s[i:i+160]); n+=1
+              print('@@DONE',f.split('/')[-1],n)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.which }}
+          path: ci/out/
