@@ -322,7 +322,7 @@ jobs:
           shasum -a 256 apk/test.apk
       - name: build the fixture app
         run: gradle :fixture:assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process && ls -l fixture/build/outputs/apk/debug/
-      - run: python3 -m pip install --user pillow
+      - run: python3 -m pip install --user --break-system-packages pillow || python3 -m pip install --user pillow
       - run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
       - name: enable KVM
         if: runner.os == 'Linux'
