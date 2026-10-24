@@ -296,7 +296,7 @@ jobs:
       fail-fast: false
       matrix:
         which: [ beta1-baseline, beta2 ]
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
@@ -314,21 +314,18 @@ jobs:
           mkdir -p app/build/outputs/apk/debug apk
           if [ "${{ matrix.which }}" = "beta1-baseline" ]; then
             curl -sL -o apk/test.apk https://github.com/${{ github.repository }}/releases/download/v0.8.9-hardened-beta1/AI-Pro-v0.8.9-hardened-beta1.apk
-            echo "9fee4a30c50858f0f8259b9a86b4e0348fd635f2bed0b90f176e9ca6db59cd59  apk/test.apk" | sha256sum -c -
+            echo "9fee4a30c50858f0f8259b9a86b4e0348fd635f2bed0b90f176e9ca6db59cd59  apk/test.apk" | shasum -a 256 -c -
           else
             cp dl/AI-Pro-v0.8.9-hardened-beta2.apk apk/test.apk
           fi
           cp apk/test.apk app/build/outputs/apk/debug/app-debug.apk
-          sha256sum apk/test.apk
-          BT=$(ls -d "$ANDROID_HOME/build-tools/"* | sort -V | tail -1)
-          "$BT/aapt2" dump badging apk/test.apk | grep -E "application-label:|^package"
-          "$BT/aapt2" dump badging apk/test.apk | grep -m1 "application-label:" | sed "s/application-label:'\(.*\)'/\1/" > /tmp/label.txt
-          cat /tmp/label.txt
+          shasum -a 256 apk/test.apk
       - name: build the fixture app
         run: gradle :fixture:assembleDebug --no-daemon -Dkotlin.compiler.execution.strategy=in-process && ls -l fixture/build/outputs/apk/debug/
       - run: python3 -m pip install --user pillow
       - run: (cd ci && nohup python3 -m http.server 8901 >/tmp/httpd.log 2>&1 &)
       - name: enable KVM
+        if: runner.os == 'Linux'
         run: |
           echo 'KERNEL="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -337,7 +334,7 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
-          arch: x86_64
+          arch: arm64-v8a
           target: google_apis
           profile: pixel_6
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot-save
