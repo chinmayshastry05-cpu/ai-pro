@@ -105,6 +105,22 @@ overlay0() { [ $INVALID = 1 ] && return; adb shell am start -n $PKG/.MainActivit
 calib2() { KX=1.08646; DX=-46.69; KY=1.08646; DY=-139.07; echo "smoke: fixed transform $KX $DX $KY $DY (no logging build)" >> $OUT/rg-notes.txt; }
 tapchk() { :; }
 calib() { return 1; }
+# Chrome first-run warm-up: the current system image shows Chrome FRE dialogs
+# (welcome, notifications prompt) that block page content and uiautomator dumps.
+# Clear them once up front; blind taps cover dialogs the dump cannot see.
+for k in $(seq 1 12); do
+  adb shell am start -a android.intent.action.VIEW -d "$URL?warm=$k" >/dev/null; sleep 6
+  dismiss; ui
+  if grep -q alpha /tmp/u.xml 2>/dev/null; then echo "chrome warm-up ok after $k tries" >> $OUT/rg-notes.txt; break; fi
+  echo "chrome warm-up retry $k" >> $OUT/rg-notes.txt
+  adb shell input keyevent 4 >/dev/null 2>&1; sleep 1
+  adb shell input tap $((W*50/100)) $((H*758/1000)); sleep 2
+  adb shell input tap $((W*77/100)) $((H*758/1000)); sleep 2
+  adb shell input tap $((W*50/100)) $((H*880/1000)); sleep 2
+  adb shell input tap $((W*80/100)) $((H*950/1000)); sleep 2
+done
+ui; grep -q alpha /tmp/u.xml 2>/dev/null || verdict "RG_WARMUP=INVALID (chrome first-run not cleared)"
+
 if want C10; then
 # C10 screen recordings of gesture start/end frames: tap, circle, rectangle (for plus mark / crop box / flash / Reading text / stray handles review)
 rec_start() { adb shell "rm -f /sdcard/$1.mp4; screenrecord --time-limit 30 /sdcard/$1.mp4" </dev/null >/dev/null 2>&1 & RECPID=$!; sleep 3; }
