@@ -264,8 +264,9 @@ jobs:
             "$BT/aapt2" dump xmltree --file AndroidManifest.xml $A > /tmp/manifest.txt
             grep -q "BIND_VOICE_INTERACTION_SERVICE" /tmp/manifest.txt || { echo "accepted assistant manifest line changed"; exit 1; }
             if grep -qi "debuggable" /tmp/manifest.txt; then echo "debuggable flag present"; exit 1; fi
-            unzip -Z1 $A | grep -q "ic_translate.xml" || { echo "ic_translate missing from APK"; exit 1; }
-            unzip -Z1 $A | grep -q "ic_event.xml" || { echo "ic_event missing from APK"; exit 1; }
+            "$BT/aapt2" dump resources $A > /tmp/res.txt
+            grep -q "ic_translate" /tmp/res.txt || { echo "ic_translate missing from resources.arsc"; exit 1; }
+            grep -q "ic_event" /tmp/res.txt || { echo "ic_event missing from resources.arsc"; exit 1; }
             unzip -l $A | grep 'lib/' > /tmp/libs.txt
             test "$(grep -c "lib/$abi/" /tmp/libs.txt)" = "8"
             test "$(grep -c 'lib/' /tmp/libs.txt)" = "8"
@@ -286,6 +287,7 @@ jobs:
             sha256sum $A
           done
       - uses: actions/upload-artifact@v4
+        if: always()
         with: { name: beta2-apks, path: /tmp/out/ }
   evidence:
     needs: build
