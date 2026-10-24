@@ -376,8 +376,9 @@ class SelectActivity : Activity() {
         selView.setTextLines(highlight ?: linesInView(viewRect))
         selView.setConfirmed(viewRect)
         showChrome(true)
-        gifPill.visibility = View.GONE // CTS look: the Copy | Translate chip takes that slot
-        showTextChip(viewRect)
+        gifPill.visibility = View.GONE
+        // no separate Copy | Translate capsule: the icon toolbar below the
+        // selection carries every action once (duplicate menu confused users)
         readText()
     }
 
@@ -1076,14 +1077,15 @@ class SelectActivity : Activity() {
         bar.visibility = View.GONE
     }
 
-    private fun textBtn(t: String, f: () -> Unit): TextView {
-        val tv = TextView(this)
-        tv.text = t
-        tv.textSize = 13.5f
-        tv.setTextColor(Color.WHITE)
-        tv.setPadding(dp(13f), dp(10f), dp(13f), dp(10f))
-        tv.setOnClickListener { f() }
-        return tv
+    /** Icon button for the text toolbar: contentDescription keeps the action name
+     *  for accessibility, a long-press shows the same label. */
+    private fun textAction(res: Int, label: String, f: () -> Unit): ImageView {
+        val iv = chipIcon(res, label, f)
+        iv.setOnLongClickListener {
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+            true
+        }
+        return iv
     }
 
     private fun buildTextBar() {
@@ -1092,11 +1094,11 @@ class SelectActivity : Activity() {
         textBar.gravity = Gravity.CENTER
         textBar.setBackgroundResource(R.drawable.toolbar_bg)
         textBar.layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START)
-        textBar.addView(textBtn("Translate") { translateText() })
-        textBar.addView(textBtn("Copy") { copyText() })
-        textBar.addView(textBtn("Share") { shareText() })
-        textBar.addView(textBtn("Search") { searchText() })
-        textBar.addView(textBtn("Add event") { addEvent() })
+        textBar.addView(textAction(R.drawable.ic_translate, "Translate") { translateText() })
+        textBar.addView(textAction(R.drawable.ic_copy_img, "Copy") { copyText() })
+        textBar.addView(textAction(R.drawable.ic_share, "Share") { shareText() })
+        textBar.addView(textAction(R.drawable.ic_search, "Search") { searchText() })
+        textBar.addView(textAction(R.drawable.ic_event, "Add event") { addEvent() })
         textBar.visibility = View.GONE
     }
 
@@ -1388,7 +1390,6 @@ class SelectActivity : Activity() {
         selViewRect?.let { selView.setTextLines(linesInView(it)) }
         showChrome(true)
         gifPill.visibility = View.GONE
-        selViewRect?.let { showTextChip(it) }
         readText()
     }
 
@@ -1439,9 +1440,14 @@ class SelectActivity : Activity() {
         // the nodes only know whole words, so they cannot supply partial words
         val charText = textFromCharRanges()
         if (charText != null) { finishOcr(charText); return }
-        // real text from the app itself first - exact Unicode, every language, zero OCR error
+        // real text from the app itself, but only when the selection covers whole
+        // nodes - a tapped word inside a single-node message must not become the
+        // whole message (the Search bug)
         val fromScreen = textFromNodes()
         if (fromScreen.isNotEmpty()) { finishOcr(fromScreen); return }
+        // exactly the selected words from the OCR word data that drives the highlight
+        val fromWords = textFromWords()
+        if (fromWords.isNotEmpty()) { finishOcr(fromWords); return }
         runOcr(c)
     }
 
@@ -1465,6 +1471,40 @@ class SelectActivity : Activity() {
             sb.append(t.substring(from, to))
         }
         return sb.toString().trim().ifEmpty { null }
+    }
+
+    /** Text of exactly the selected words, from the OCR word data behind the
+     *  highlight. Used when the selection covers no whole node (a tapped word or
+     *  a handle range inside a single-node message): the node only carries the
+     *  full message, so the selection scope comes from the words. Same line joins
+     *  with a space, different lines with a newline. */
+    private fun textFromWords(): String {
+        if (wordChars.isEmpty()) return ""
+        val targets: List<RectF> = selRangeBmp ?: selHighlightBmp
+            ?: cropRectBmp?.let { listOf(RectF(it)) } ?: return ""
+        if (targets.isEmpty()) return ""
+        // dedupe like cursorSpanChar: the 5 recognizers often return the same word
+        fun dedupKey(wc: WordChars) =
+            wc.text + "|" + wc.box.left + "," + wc.box.top + "," + wc.box.right + "," + wc.box.bottom
+        val seen = HashSet<String>()
+        val deduped = wordChars.filter { seen.add(dedupKey(it)) }
+        val matched = deduped.filter { wc ->
+            val cx = wc.box.centerX(); val cy = wc.box.centerY()
+            targets.any { val t = RectF(it); t.inset(-2f, -2f); t.contains(cx, cy) }
+        }
+        if (matched.isEmpty()) return ""
+        val ordered = readingOrderOf(matched) { it.box }
+        val sb = StringBuilder()
+        for ((i, wc) in ordered.withIndex()) {
+            if (i > 0) {
+                val prev = ordered[i - 1]
+                val dy = kotlin.math.abs(wc.box.centerY() - prev.box.centerY())
+                val sameLine = dy < minOf(wc.box.height(), prev.box.height()) * 0.5f
+                sb.append(if (sameLine) " " else "\n")
+            }
+            sb.append(wc.text)
+        }
+        return sb.toString().trim()
     }
 
     /** Text of the on-screen nodes inside the current selection (dumped at capture time). */
@@ -1497,9 +1537,11 @@ class SelectActivity : Activity() {
             // nodes whose center sits inside the selection - avoids bleeding in neighbouring messages
             inside = hits.filter { sel.contains(it.first.centerX().toFloat(), it.first.centerY().toFloat()) }
         }
-        if (hits.isEmpty()) return ""
-        val use = if (inside.isNotEmpty()) inside else hits
-        return readingOrderOf(use) { RectF(it.first) }
+        // only nodes the selection actually covers: when no node center sits
+        // inside (e.g. one word tapped in a big message view), the caller falls
+        // back to the selected words instead of the whole node text
+        if (inside.isEmpty()) return ""
+        return readingOrderOf(inside) { RectF(it.first) }
             .joinToString("\n") { it.second }.trim()
     }
 
