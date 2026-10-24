@@ -3,6 +3,7 @@ on:
   push:
     branches: [ 'beta/beta2-build' ]
     paths: [ '.github/workflows/24-beta2.yml' ]
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
